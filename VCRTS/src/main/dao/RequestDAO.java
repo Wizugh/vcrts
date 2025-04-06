@@ -3,7 +3,7 @@ package dao;
 import db.FileManager;
 import models.Request;
 import java.util.ArrayList;
-import java.util.List;
+import java.util.List; // Explicitly import java.util.List
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -67,9 +67,11 @@ public class RequestDAO {
      * @return true if the request was successfully added, false otherwise.
      */
     public boolean addRequest(Request request) {
-        // Generate a unique ID for the new request
-        int requestId = FileManager.generateUniqueNumericId(REQUESTS_FILE);
-        request.setRequestId(requestId);
+        // Generate a unique ID for the new request (if not already set)
+        if (request.getRequestId() <= 0) {
+            int requestId = FileManager.generateUniqueNumericId(REQUESTS_FILE);
+            request.setRequestId(requestId);
+        }
         
         String requestLine = requestToLine(request);
         return FileManager.appendLine(REQUESTS_FILE, requestLine);
