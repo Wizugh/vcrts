@@ -7,7 +7,6 @@ import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
-import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import controller.ServerController;
@@ -28,7 +27,7 @@ public class ClientDashboard extends JPanel {
     private JTable jobTable;
     private DefaultTableModel tableModel;
     private JComboBox<String> statusFilter;
-    private JButton refreshButton, addJobButton, viewTimesButton, refreshRequestsButton;
+    private JButton refreshButton, addJobButton, refreshRequestsButton;
     private DefaultListModel<String> requestListModel;
     private JList<String> requestList;
 
@@ -94,11 +93,6 @@ public class ClientDashboard extends JPanel {
             updateTable();
             refreshRequestStatus();
         }).start();
-        
-        // Connect client to server if not already connected
-        if (!serverController.isClientConnected(client.getUserId())) {
-            serverController.connectClient(client);
-        }
         
         updateTable();
         refreshRequestStatus();
@@ -179,24 +173,6 @@ public class ClientDashboard extends JPanel {
      * Opens a dialog with input fields for adding a new job.
      */
     private void openAddJobDialog() {
-        // Check if client is connected to server
-        if (!serverController.isClientConnected(client.getUserId())) {
-            int choice = JOptionPane.showConfirmDialog(this,
-                "You are not connected to the server. Connect now?",
-                "Connection Required",
-                JOptionPane.YES_NO_OPTION);
-                
-            if (choice == JOptionPane.YES_OPTION) {
-                serverController.connectClient(client);
-            } else {
-                JOptionPane.showMessageDialog(this, 
-                    "Request not submitted. Connection required.", 
-                    "Connection Error", 
-                    JOptionPane.ERROR_MESSAGE);
-                return;
-            }
-        }
-    
         // Create a panel with more sophisticated layout
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
@@ -308,120 +284,140 @@ public class ClientDashboard extends JPanel {
             // Prepare the request data
             // Format: jobId|jobName|jobOwnerId|duration|deadline|status
             String requestData = jobId + "|" + jobName + "|" + client.getUserId() + "|" + 
-                                 duration + "|" + deadline + "|" + CloudControllerDAO.STATE_QUEUED;
+                             duration + "|" + deadline + "|" + CloudControllerDAO.STATE_QUEUED;
             
-            // Create and submit the request
+            // Create the request
             Request request = new Request(client.getUserId(), client.getFullName(), 
-                                         Request.TYPE_ADD_JOB, requestData);
+                                     Request.TYPE_ADD_JOB, requestData);
             
-            boolean success = serverController.submitRequest(request);
-            
-            if (success) {
-                JOptionPane.showMessageDialog(this, 
-                    "Job request submitted successfully! Awaiting approval.", 
-                    "Success", 
-                    JOptionPane.INFORMATION_MESSAGE);
-                refreshRequestStatus();
-            } else {
-                JOptionPane.showMessageDialog(this, 
-                    "Failed to submit job request!", 
-                    "Error", 
-                    JOptionPane.ERROR_MESSAGE);
-            }
+            // Submit the request in a background thread
+            new Thread(() -> {
+                boolean success = serverController.submitRequest(request);
+                
+                // Update UI on the event dispatch thread
+                SwingUtilities.invokeLater(() -> {
+                    if (success) {
+                        JOptionPane.showMessageDialog(ClientDashboard.this, 
+                            "Job request submitted successfully! Awaiting approval.", 
+                            "Success", 
+                            JOptionPane.INFORMATION_MESSAGE);
+                        refreshRequestStatus();
+                    } else {
+                        JOptionPane.showMessageDialog(ClientDashboard.this, 
+                            "Failed to submit job request!", 
+                            "Error", 
+                            JOptionPane.ERROR_MESSAGE);
+                    }
+                });
+            }).start();
         }
     }
 
     public void updateTable() {
-        try {
-            tableModel.setRowCount(0);
-            String selectedStatus = (String) statusFilter.getSelectedItem();
-            // If "All" is selected, getJobsByClient returns all jobs for the client.
-            List<Job> jobs = jobDAO.getJobsByClient(client.getUserId(), selectedStatus);
+        // Use a separate thread for database operations
+        new Thread(() -> {
+            try {
+                String selectedStatus = (String) statusFilter.getSelectedItem();
+                // If "All" is selected, getJobsByClient returns all jobs for the client.
+                List<Job> jobs = jobDAO.getJobsByClient(client.getUserId(), selectedStatus);
+                
+                // Update UI on the event dispatch thread
+                SwingUtilities.invokeLater(() -> {
+                    tableModel.setRowCount(0);
+                    
+                    // Keep track of cumulative time for FIFO
+                    long cumulativeMinutes = 0;
 
-            // Keep track of cumulative time for FIFO
-            long cumulativeMinutes = 0;
+                    for (Job job : jobs) {
+                        // Calculate job duration in minutes
+                        long durationMinutes = 0;
+                        try {
+                            String[] timeParts = job.getDuration().split(":");
+                            int hours = Integer.parseInt(timeParts[0]);
+                            int minutes = Integer.parseInt(timeParts[1]);
+                            int seconds = Integer.parseInt(timeParts[2]);
 
-            for (Job job : jobs) {
-                // Calculate job duration in minutes
-                long durationMinutes = 0;
-                try {
-                    String[] timeParts = job.getDuration().split(":");
-                    int hours = Integer.parseInt(timeParts[0]);
-                    int minutes = Integer.parseInt(timeParts[1]);
-                    int seconds = Integer.parseInt(timeParts[2]);
+                            durationMinutes = hours * 60 + minutes + (seconds > 0 ? 1 : 0); // Round up seconds
+                        } catch (Exception e) {
+                            durationMinutes = 60; // Default to 1 hour if parsing fails
+                        }
 
-                    durationMinutes = hours * 60 + minutes + (seconds > 0 ? 1 : 0); // Round up seconds
-                } catch (Exception e) {
-                    durationMinutes = 60; // Default to 1 hour if parsing fails
-                }
+                        // Add to cumulative time if not completed
+                        if (!job.getStatus().equals(CloudControllerDAO.STATE_COMPLETED)) {
+                            cumulativeMinutes += durationMinutes;
+                        }
 
-                // Add to cumulative time if not completed
-                if (!job.getStatus().equals(CloudControllerDAO.STATE_COMPLETED)) {
-                    cumulativeMinutes += durationMinutes;
-                }
+                        // Format the cumulative time as hours and minutes
+                        long totalHours = cumulativeMinutes / 60;
+                        long totalMinutes = cumulativeMinutes % 60;
+                        String timeToComplete = totalHours > 0 ?
+                                String.format("%dh %dm", totalHours, totalMinutes) :
+                                String.format("%dm", totalMinutes);
 
-                // Format the cumulative time as hours and minutes
-                long totalHours = cumulativeMinutes / 60;
-                long totalMinutes = cumulativeMinutes % 60;
-                String timeToComplete = totalHours > 0 ?
-                        String.format("%dh %dm", totalHours, totalMinutes) :
-                        String.format("%dm", totalMinutes);
+                        // For completed jobs, don't show time to complete
+                        if (job.getStatus().equals(CloudControllerDAO.STATE_COMPLETED)) {
+                            timeToComplete = "Completed";
+                        }
 
-                // For completed jobs, don't show time to complete
-                if (job.getStatus().equals(CloudControllerDAO.STATE_COMPLETED)) {
-                    timeToComplete = "Completed";
-                }
-
-                tableModel.addRow(new Object[]{
-                        job.getJobId(),
-                        job.getStatus(),
-                        job.getDuration(),
-                        timeToComplete,
-                        job.getCreatedTimestamp(),
-                        "Not calculated"  // Placeholder for completion time
+                        tableModel.addRow(new Object[]{
+                                job.getJobId(),
+                                job.getStatus(),
+                                job.getDuration(),
+                                timeToComplete,
+                                job.getCreatedTimestamp(),
+                                "Not calculated"  // Placeholder for completion time
+                        });
+                    }
+                });
+            } catch(Exception ex) {
+                Logger.getLogger(ClientDashboard.class.getName()).log(Level.SEVERE, "Error updating job table: " + ex.getMessage(), ex);
+                
+                SwingUtilities.invokeLater(() -> {
+                    JOptionPane.showMessageDialog(ClientDashboard.this, 
+                        "Error loading job data: " + ex.getMessage(), 
+                        "Error", 
+                        JOptionPane.ERROR_MESSAGE);
                 });
             }
-        } catch(Exception ex) {
-            Logger.getLogger(ClientDashboard.class.getName()).log(Level.SEVERE, "Error updating job table: " + ex.getMessage(), ex);
-            JOptionPane.showMessageDialog(this, "Error loading job data: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-        }
+        }).start();
     }
     
     /**
      * Refreshes the request status list.
      */
     private void refreshRequestStatus() {
-        requestListModel.clear();
-        
-        if (!serverController.isClientConnected(client.getUserId())) {
-            requestListModel.addElement("Not connected to server. Connect to view requests.");
-            return;
-        }
-        
-        List<Request> requests = serverController.getClientRequests(client.getUserId());
-        
-        if (requests.isEmpty()) {
-            requestListModel.addElement("No requests found.");
-            return;
-        }
-        
-        for (Request request : requests) {
-            String status = request.getStatus();
-            String statusText = "";
+        // Use a separate thread for fetching request data
+        new Thread(() -> {
+            List<Request> requests = serverController.getClientRequests(client.getUserId());
             
-            if (Request.STATUS_PENDING.equals(status)) {
-                statusText = "PENDING - Awaiting approval";
-            } else if (Request.STATUS_APPROVED.equals(status)) {
-                statusText = "APPROVED - " + request.getResponseMessage();
-            } else if (Request.STATUS_REJECTED.equals(status)) {
-                statusText = "REJECTED - " + request.getResponseMessage();
-            }
-            
-            String requestType = request.getRequestType().equals(Request.TYPE_ADD_JOB) ?
-                "Add Job" : "Other Request";
+            // Update UI on the event dispatch thread
+            SwingUtilities.invokeLater(() -> {
+                requestListModel.clear();
                 
-            requestListModel.addElement("#" + request.getRequestId() + " - " + requestType + " - " + statusText);
-        }
+                if (requests.isEmpty()) {
+                    requestListModel.addElement("No requests found.");
+                    return;
+                }
+                
+                for (Request request : requests) {
+                    String status = request.getStatus();
+                    String statusText = "";
+                    
+                    if (Request.STATUS_PENDING.equals(status)) {
+                        statusText = "PENDING - Awaiting approval";
+                    } else if (Request.STATUS_APPROVED.equals(status)) {
+                        statusText = "APPROVED - " + request.getResponseMessage();
+                    } else if (Request.STATUS_REJECTED.equals(status)) {
+                        statusText = "REJECTED - " + request.getResponseMessage();
+                    }
+                    
+                    String requestType = request.getRequestType().equals(Request.TYPE_ADD_JOB) ?
+                        "Add Job" : "Other Request";
+                        
+                    requestListModel.addElement("#" + request.getRequestId() + " - " + requestType + " - " + statusText);
+                }
+            });
+        }).start();
     }
     
     /**
