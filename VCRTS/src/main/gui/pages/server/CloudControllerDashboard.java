@@ -3,24 +3,33 @@ package gui.pages.server;
 import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.JTableHeader;
+import javax.swing.table.TableColumnModel;
 import java.awt.*;
+import java.util.Comparator; // Import Comparator
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+
 import dao.JobDAO;
 import dao.UserDAO;
+import dao.VehicleDAO;
 import dao.AllocationDAO;
 import dao.CloudControllerDAO;
 import models.Job;
+import models.PendingRequest;
 import models.User;
 import models.Allocation;
+import models.Vehicle; // Import Vehicle
 
 public class CloudControllerDashboard extends JPanel {
-    private JTable jobTable, userTable, allocationTable, scheduleTable;
-    private DefaultTableModel jobTableModel, userTableModel, allocationTableModel, scheduleTableModel;
+    private JTable jobTable, userTable, allocationTable, scheduleTable, pendingRequestTable;
+    private DefaultTableModel jobTableModel, userTableModel, allocationTableModel, scheduleTableModel, pendingRequestTableModel;
     private JButton addJobButton, editJobButton, deleteJobButton;
     private JButton addUserButton, editUserButton, deleteUserButton;
     private JButton allocateButton, removeAllocationButton;
     private JButton calculateTimesButton, assignVehiclesButton, advanceQueueButton;
+    private JButton approveRequestButton, rejectRequestButton;
     private JComboBox<String> userDropdown, jobDropdown;
     private JLabel queueStatusLabel;
 
@@ -32,185 +41,323 @@ public class CloudControllerDashboard extends JPanel {
 
     public CloudControllerDashboard() {
         setLayout(new BorderLayout());
+        setBackground(Color.LIGHT_GRAY); // Slightly change background for distinction
 
-        // Top panel with title and menu bar
-        JPanel topPanel = new JPanel(new BorderLayout());
-        JLabel titleLabel = new JLabel("Cloud Controller", SwingConstants.CENTER);
+        // Top panel with title
+        JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+         topPanel.setBackground(new Color(43, 43, 43));
+        JLabel titleLabel = new JLabel("Cloud Controller Dashboard", SwingConstants.CENTER);
         titleLabel.setFont(new Font("Arial", Font.BOLD, 20));
-        topPanel.add(titleLabel, BorderLayout.NORTH);
-
-        JMenuBar menuBar = new JMenuBar();
-        menuBar.setLayout(new FlowLayout(FlowLayout.RIGHT));
-        JMenu menu = new JMenu("Menu");
-        JMenuItem editProfile = new JMenuItem("Edit Profile");
-        JMenuItem logout = new JMenuItem("Logout");
-        JMenuItem exit = new JMenuItem("Exit to Desktop");
-        menu.add(editProfile);
-        menu.add(logout);
-        menu.add(exit);
-        menuBar.add(menu);
-        topPanel.add(menuBar, BorderLayout.SOUTH);
+         titleLabel.setForeground(Color.WHITE);
+        topPanel.add(titleLabel);
         add(topPanel, BorderLayout.NORTH);
 
-        // Tabbed pane for Jobs, Users, Allocations, and Schedule
+        // Tabbed pane for different views
         JTabbedPane tabbedPane = new JTabbedPane();
+        tabbedPane.setFont(new Font("Arial", Font.BOLD, 14));
 
-        // Jobs Tab
-        JPanel jobPanel = new JPanel(new BorderLayout());
-        String[] jobColumns = {"Job ID", "Job Name", "Job Owner", "Duration", "Deadline", "Status", "Created At"};
-        jobTableModel = new DefaultTableModel(jobColumns, 0);
+        // --- Pending Requests Tab ---
+        JPanel pendingRequestPanel = createPendingRequestPanel();
+        tabbedPane.addTab("Pending Approvals", UIManager.getIcon("OptionPane.questionIcon"), pendingRequestPanel);
+
+        // --- Jobs Tab ---
+        JPanel jobPanel = createJobPanel();
+        tabbedPane.addTab("Jobs", UIManager.getIcon("FileView.hardDriveIcon"), jobPanel);
+
+        // --- Users Tab ---
+        JPanel userPanel = createUserPanel();
+        tabbedPane.addTab("Users", UIManager.getIcon("FileChooser.detailsViewIcon"), userPanel);
+
+        // --- Allocations Tab ---
+        JPanel allocationPanel = createAllocationPanel();
+        tabbedPane.addTab("Allocations", UIManager.getIcon("Tree.openIcon"), allocationPanel);
+
+        // --- Schedule Tab ---
+        JPanel schedulePanel = createSchedulePanel();
+        tabbedPane.addTab("Job Schedule", UIManager.getIcon("Tree.leafIcon"), schedulePanel);
+
+        add(tabbedPane, BorderLayout.CENTER);
+
+        // Load initial data
+        refreshAllData();
+
+        // Add tab change listener to refresh relevant data
+        tabbedPane.addChangeListener(e -> {
+            int selectedIndex = tabbedPane.getSelectedIndex();
+            switch (selectedIndex) {
+                case 0: // Pending Approvals
+                    loadPendingRequestData();
+                    break;
+                case 1: // Jobs
+                    loadJobData();
+                    break;
+                case 2: // Users
+                    loadUserData();
+                    break;
+                case 3: // Allocations
+                    loadAllocationData();
+                    loadAllocationDropdowns(); // Refresh dropdowns too
+                    break;
+                case 4: // Schedule
+                    loadScheduleData();
+                    updateQueueStatus();
+                    break;
+            }
+        });
+    }
+
+    // --- Panel Creation Methods ---
+
+    private JPanel createPendingRequestPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        panel.setBackground(Color.WHITE);
+
+        // Table setup
+        String[] pendingColumns = {"Req ID", "Type", "Submitted By", "Data Details"};
+        pendingRequestTableModel = new DefaultTableModel(pendingColumns, 0) {
+            @Override public boolean isCellEditable(int row, int col) { return false; }
+        };
+        pendingRequestTable = new JTable(pendingRequestTableModel);
+        setupTableAppearance(pendingRequestTable);
+         // Adjust column widths
+         TableColumnModel colModel = pendingRequestTable.getColumnModel();
+         colModel.getColumn(0).setPreferredWidth(60);  colModel.getColumn(0).setMaxWidth(80); // Req ID
+         colModel.getColumn(1).setPreferredWidth(80);  colModel.getColumn(1).setMaxWidth(100);// Type
+         colModel.getColumn(2).setPreferredWidth(180);                                       // Submitted By
+         colModel.getColumn(3).setPreferredWidth(400);                                       // Data Details
+         pendingRequestTable.setAutoResizeMode(JTable.AUTO_RESIZE_LAST_COLUMN); // Allow last column to take remaining space
+
+        JScrollPane scrollPane = new JScrollPane(pendingRequestTable);
+        panel.add(scrollPane, BorderLayout.CENTER);
+
+        // Action panel
+        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 15, 5));
+         actionPanel.setBackground(Color.WHITE);
+        approveRequestButton = new JButton("Approve Selected", UIManager.getIcon("OptionPane.informationIcon"));
+        rejectRequestButton = new JButton("Reject Selected", UIManager.getIcon("OptionPane.errorIcon"));
+        JButton refreshPendingButton = new JButton("Refresh List", UIManager.getIcon("Tree.closedIcon"));
+
+        approveRequestButton.addActionListener(e -> approveSelectedRequest());
+        rejectRequestButton.addActionListener(e -> rejectSelectedRequest());
+        refreshPendingButton.addActionListener(e -> loadPendingRequestData());
+
+        actionPanel.add(approveRequestButton);
+        actionPanel.add(rejectRequestButton);
+        actionPanel.add(refreshPendingButton);
+        panel.add(actionPanel, BorderLayout.SOUTH);
+
+        return panel;
+    }
+
+    private JPanel createJobPanel() {
+        JPanel jobPanel = new JPanel(new BorderLayout(10, 10));
+         jobPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+         jobPanel.setBackground(Color.WHITE);
+
+        String[] jobColumns = {"Job ID", "Job Name", "Job Owner ID", "Duration", "Deadline", "Status", "Created At"};
+        jobTableModel = new DefaultTableModel(jobColumns, 0) {
+            @Override public boolean isCellEditable(int row, int col) { return false; }
+        };
         jobTable = new JTable(jobTableModel);
+        setupTableAppearance(jobTable);
+         jobPanel.add(new JScrollPane(jobTable), BorderLayout.CENTER);
 
-        // Center-align table cells
-        DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
-        centerRenderer.setHorizontalAlignment(JLabel.CENTER);
-        for (int i = 0; i < jobTable.getColumnCount(); i++) {
-            jobTable.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
-        }
-
-        jobPanel.add(new JScrollPane(jobTable), BorderLayout.CENTER);
-
-        JPanel jobActionPanel = new JPanel();
-        addJobButton = new JButton("Add Job");
+        JPanel jobActionPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 15, 5));
+         jobActionPanel.setBackground(Color.WHITE);
+        addJobButton = new JButton("Add Job (Direct)");
         editJobButton = new JButton("Edit Job");
         deleteJobButton = new JButton("Delete Job");
+        JButton refreshJobsButton = new JButton("Refresh Jobs");
+
+        addJobButton.addActionListener(e -> addNewJob());
+        editJobButton.addActionListener(e -> editSelectedJob());
+        deleteJobButton.addActionListener(e -> deleteSelectedJob());
+        refreshJobsButton.addActionListener(e -> loadJobData());
+
         jobActionPanel.add(addJobButton);
         jobActionPanel.add(editJobButton);
         jobActionPanel.add(deleteJobButton);
+        jobActionPanel.add(refreshJobsButton);
         jobPanel.add(jobActionPanel, BorderLayout.SOUTH);
-        tabbedPane.addTab("Jobs", jobPanel);
+        return jobPanel;
+    }
 
-        // Users Tab
-        JPanel userPanel = new JPanel(new BorderLayout());
-        String[] userColumns = {"User ID", "Username", "Email", "Role"};
-        userTableModel = new DefaultTableModel(userColumns, 0);
+     private JPanel createUserPanel() {
+        JPanel userPanel = new JPanel(new BorderLayout(10, 10));
+         userPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+         userPanel.setBackground(Color.WHITE);
+
+        String[] userColumns = {"User ID", "Full Name", "Email", "Roles"};
+        userTableModel = new DefaultTableModel(userColumns, 0) {
+            @Override public boolean isCellEditable(int row, int col) { return false; }
+        };
         userTable = new JTable(userTableModel);
-
-        // Center-align table cells
-        for (int i = 0; i < userTable.getColumnCount(); i++) {
-            userTable.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
-        }
-
+        setupTableAppearance(userTable);
         userPanel.add(new JScrollPane(userTable), BorderLayout.CENTER);
 
-        JPanel userActionPanel = new JPanel();
+        JPanel userActionPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 15, 5));
+         userActionPanel.setBackground(Color.WHITE);
         addUserButton = new JButton("Add User");
         editUserButton = new JButton("Edit User");
         deleteUserButton = new JButton("Delete User");
+         JButton refreshUsersButton = new JButton("Refresh Users");
+
+        addUserButton.addActionListener(e -> addNewUser());
+        editUserButton.addActionListener(e -> editSelectedUser());
+        deleteUserButton.addActionListener(e -> deleteSelectedUser());
+         refreshUsersButton.addActionListener(e -> loadUserData());
+
         userActionPanel.add(addUserButton);
         userActionPanel.add(editUserButton);
         userActionPanel.add(deleteUserButton);
+        userActionPanel.add(refreshUsersButton);
         userPanel.add(userActionPanel, BorderLayout.SOUTH);
-        tabbedPane.addTab("Users", userPanel);
+        return userPanel;
+    }
 
-        // Allocations Tab
-        JPanel allocationPanel = new JPanel(new BorderLayout());
-        String[] allocationColumns = {"Allocation ID", "User", "Job"};
-        allocationTableModel = new DefaultTableModel(allocationColumns, 0);
+    private JPanel createAllocationPanel() {
+         JPanel allocationPanel = new JPanel(new BorderLayout(10, 10));
+         allocationPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+         allocationPanel.setBackground(Color.WHITE);
+
+        String[] allocationColumns = {"Alloc ID", "User ID", "Job ID"};
+        allocationTableModel = new DefaultTableModel(allocationColumns, 0){
+            @Override public boolean isCellEditable(int row, int col) { return false; }
+        };
         allocationTable = new JTable(allocationTableModel);
-
-        // Center-align table cells
-        for (int i = 0; i < allocationTable.getColumnCount(); i++) {
-            allocationTable.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
-        }
-
+        setupTableAppearance(allocationTable);
         allocationPanel.add(new JScrollPane(allocationTable), BorderLayout.CENTER);
 
-        JPanel allocationControls = new JPanel();
+        JPanel allocationControls = new JPanel(new GridBagLayout());
+        allocationControls.setBackground(Color.WHITE);
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.anchor = GridBagConstraints.WEST;
+
         userDropdown = new JComboBox<>();
+        userDropdown.setPrototypeDisplayValue("User ID - User NameXXXXXXXXXX");
         jobDropdown = new JComboBox<>();
+        jobDropdown.setPrototypeDisplayValue("Job ID - Job NameXXXXXXXXXXXXX");
+
         allocateButton = new JButton("Allocate User to Job");
-        removeAllocationButton = new JButton("Remove Allocation");
-        allocationControls.add(new JLabel("Select User:"));
-        allocationControls.add(userDropdown);
-        allocationControls.add(new JLabel("Select Job:"));
-        allocationControls.add(jobDropdown);
-        allocationControls.add(allocateButton);
-        allocationControls.add(removeAllocationButton);
+        removeAllocationButton = new JButton("Remove Selected Allocation");
+         JButton refreshAllocationsButton = new JButton("Refresh Allocations");
+
+         allocateButton.addActionListener(e -> allocateUserToJob());
+         removeAllocationButton.addActionListener(e -> removeSelectedAllocation());
+         refreshAllocationsButton.addActionListener(e -> {
+             loadAllocationData();
+             loadAllocationDropdowns();
+         });
+
+        gbc.gridx = 0; gbc.gridy = 0; allocationControls.add(new JLabel("Select User:"), gbc);
+        gbc.gridx = 1; gbc.gridy = 0; gbc.weightx=1.0; gbc.fill=GridBagConstraints.HORIZONTAL; allocationControls.add(userDropdown, gbc);
+        gbc.gridx = 2; gbc.gridy = 0; gbc.weightx=0; gbc.fill=GridBagConstraints.NONE; allocationControls.add(allocateButton, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1; allocationControls.add(new JLabel("Select Job:"), gbc);
+        gbc.gridx = 1; gbc.gridy = 1; gbc.weightx=1.0; gbc.fill=GridBagConstraints.HORIZONTAL; allocationControls.add(jobDropdown, gbc);
+        gbc.gridx = 2; gbc.gridy = 1; gbc.weightx=0; gbc.fill=GridBagConstraints.NONE; allocationControls.add(removeAllocationButton, gbc);
+
+        gbc.gridx = 2; gbc.gridy = 2; allocationControls.add(refreshAllocationsButton, gbc);
+
         allocationPanel.add(allocationControls, BorderLayout.SOUTH);
-        tabbedPane.addTab("Allocations", allocationPanel);
+        return allocationPanel;
+    }
 
-        // Schedule Tab (New)
-        JPanel schedulePanel = new JPanel(new BorderLayout());
+    private JPanel createSchedulePanel() {
+        JPanel schedulePanel = new JPanel(new BorderLayout(10, 10));
+         schedulePanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+         schedulePanel.setBackground(Color.WHITE);
 
-        // Add a status panel at the top of the schedule tab
         JPanel statusPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        queueStatusLabel = new JLabel("Queue Status: Loading...");
+         statusPanel.setBackground(Color.WHITE);
+        queueStatusLabel = new JLabel("Queue Status: Loading...", SwingConstants.CENTER);
         queueStatusLabel.setFont(new Font("Arial", Font.BOLD, 14));
+         queueStatusLabel.setForeground(new Color(0, 102, 204));
         statusPanel.add(queueStatusLabel);
         schedulePanel.add(statusPanel, BorderLayout.NORTH);
 
-        String[] scheduleColumns = {"Job ID", "Job Name", "Duration", "Time to Complete", "Status", "Completion Time"};
-        scheduleTableModel = new DefaultTableModel(scheduleColumns, 0);
+        String[] scheduleColumns = {"Job ID", "Job Name", "Duration", "Time Remaining", "Status", "Est. Completion Time"};
+        scheduleTableModel = new DefaultTableModel(scheduleColumns, 0) {
+             @Override public boolean isCellEditable(int row, int col) { return false; }
+        };
         scheduleTable = new JTable(scheduleTableModel);
+        setupTableAppearance(scheduleTable);
+         schedulePanel.add(new JScrollPane(scheduleTable), BorderLayout.CENTER);
 
-        // Center-align table cells
-        for (int i = 0; i < scheduleTable.getColumnCount(); i++) {
-            scheduleTable.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
-        }
-
-        schedulePanel.add(new JScrollPane(scheduleTable), BorderLayout.CENTER);
-
-        JPanel scheduleControlPanel = new JPanel();
-        calculateTimesButton = new JButton("Calculate Completion Times");
-        assignVehiclesButton = new JButton("Assign Vehicles to Jobs");
+        JPanel scheduleControlPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 15, 5));
+         scheduleControlPanel.setBackground(Color.WHITE);
+        calculateTimesButton = new JButton("Recalculate Schedule");
+        assignVehiclesButton = new JButton("Assign Vehicles");
         advanceQueueButton = new JButton("Advance Job Queue");
+
+         calculateTimesButton.addActionListener(e -> calculateCompletionTimes());
+         assignVehiclesButton.addActionListener(e -> assignVehiclesToJobs());
+         advanceQueueButton.addActionListener(e -> advanceJobQueue());
+
         scheduleControlPanel.add(calculateTimesButton);
         scheduleControlPanel.add(assignVehiclesButton);
         scheduleControlPanel.add(advanceQueueButton);
         schedulePanel.add(scheduleControlPanel, BorderLayout.SOUTH);
-        tabbedPane.addTab("Schedule", schedulePanel);
+        return schedulePanel;
+    }
 
-        add(tabbedPane, BorderLayout.CENTER);
+    // --- Data Loading and Refresh Methods ---
 
-        // Load data using DAO methods
+     private void refreshAllData() {
+        loadPendingRequestData();
         loadJobData();
         loadUserData();
         loadAllocationData();
         loadAllocationDropdowns();
         loadScheduleData();
         updateQueueStatus();
+    }
 
-        // Button actions
-        addJobButton.addActionListener(e -> addNewJob());
-        editJobButton.addActionListener(e -> editSelectedJob());
-        deleteJobButton.addActionListener(e -> deleteSelectedJob());
-        addUserButton.addActionListener(e -> addNewUser());
-        editUserButton.addActionListener(e -> editSelectedUser());
-        deleteUserButton.addActionListener(e -> deleteSelectedUser());
-        allocateButton.addActionListener(e -> allocateUserToJob());
-        removeAllocationButton.addActionListener(e -> removeSelectedAllocation());
-
-        // Schedule button actions
-        calculateTimesButton.addActionListener(e -> calculateCompletionTimes());
-        assignVehiclesButton.addActionListener(e -> assignVehiclesToJobs());
-        advanceQueueButton.addActionListener(e -> advanceJobQueue());
-
-        // Menu actions
-        editProfile.addActionListener(e -> JOptionPane.showMessageDialog(this, "Edit Profile clicked"));
-        logout.addActionListener(e -> JOptionPane.showMessageDialog(this, "Logging out..."));
-        exit.addActionListener(e -> System.exit(0));
-
-        // Add tab change listener to refresh data when switching to schedule tab
-        tabbedPane.addChangeListener(e -> {
-            if (tabbedPane.getSelectedIndex() == 3) { // Schedule tab
-                loadScheduleData();
-                updateQueueStatus();
+    private void loadPendingRequestData() {
+        pendingRequestTableModel.setRowCount(0);
+        List<PendingRequest> requests = cloudControllerDAO.getPendingRequests();
+        for (PendingRequest req : requests) {
+            String details = "";
+            if (req.getData() instanceof Job) {
+                Job job = (Job) req.getData();
+                details = String.format("ID: %s, Name: %s, Duration: %s", job.getJobId(), job.getJobName(), job.getDuration());
+            } else if (req.getData() instanceof Vehicle) {
+                Vehicle vehicle = (Vehicle) req.getData();
+                details = String.format("VIN: %s, %s %s (%s)", vehicle.getVin(), vehicle.getMake(), vehicle.getModel(), vehicle.getYear());
             }
-        });
+            pendingRequestTableModel.addRow(new Object[]{
+                    req.getRequestId(),
+                    req.getType(),
+                    req.getSubmittedByInfo(),
+                    details
+            });
+        }
+         boolean hasRequests = pendingRequestTableModel.getRowCount() > 0;
+         approveRequestButton.setEnabled(hasRequests);
+         rejectRequestButton.setEnabled(hasRequests);
     }
 
     private void loadJobData() {
         jobTableModel.setRowCount(0);
+         Map<String, String> currentStates = cloudControllerDAO.loadJobStates();
         List<Job> jobs = jobDAO.getAllJobs();
+
+         jobs.sort(Comparator.comparing(Job::getCreatedTimestamp));
+
         for (Job job : jobs) {
+             String displayStatus = CloudControllerDAO.STATE_PENDING_APPROVAL.equals(job.getStatus())
+                                   ? CloudControllerDAO.STATE_PENDING_APPROVAL
+                                   : currentStates.getOrDefault(job.getJobId(), job.getStatus());
+
             jobTableModel.addRow(new Object[]{
                     job.getJobId(),
                     job.getJobName(),
                     job.getJobOwnerId(),
                     job.getDuration(),
                     job.getDeadline(),
-                    job.getStatus(),
+                    displayStatus,
                     job.getCreatedTimestamp()
             });
         }
@@ -218,9 +365,14 @@ public class CloudControllerDashboard extends JPanel {
 
     private void loadUserData() {
         userTableModel.setRowCount(0);
-        List<User> users = userDAO.getAllVehicleOwners();
+        List<User> users = userDAO.getAllUsers();
         for (User user : users) {
-            userTableModel.addRow(new Object[]{user.getUserId(), user.getFullName(), user.getEmail(), user.getRole()});
+            userTableModel.addRow(new Object[]{
+                user.getUserId(),
+                user.getFullName(),
+                user.getEmail(),
+                user.getRolesAsString()
+            });
         }
     }
 
@@ -228,56 +380,53 @@ public class CloudControllerDashboard extends JPanel {
         allocationTableModel.setRowCount(0);
         List<Allocation> allocations = allocationDAO.getAllAllocations();
         for (Allocation allocation : allocations) {
-            allocationTableModel.addRow(new Object[]{allocation.getAllocationId(), allocation.getUserId(), allocation.getJobId()});
+            allocationTableModel.addRow(new Object[]{
+                allocation.getAllocationId(),
+                allocation.getUserId(),
+                allocation.getJobId()
+            });
         }
     }
 
     private void loadScheduleData() {
         scheduleTableModel.setRowCount(0);
         Map<String, String> completionTimes = cloudControllerDAO.loadSchedule();
-        List<Job> jobs = jobDAO.getAllJobs();
-        // Sort jobs by creation timestamp for FIFO display
-        jobs.sort((a, b) -> a.getCreatedTimestamp().compareTo(b.getCreatedTimestamp()));
+         Map<String, String> currentStates = cloudControllerDAO.loadJobStates();
 
-        // Running total for completion time calculation
+         List<Job> jobs = jobDAO.getAllJobs().stream()
+                          .filter(j -> !CloudControllerDAO.STATE_PENDING_APPROVAL.equals(j.getStatus()))
+                          .collect(Collectors.toList());
+
+        jobs.sort(Comparator.comparing(Job::getCreatedTimestamp));
+
         long runningTotalMinutes = 0;
 
         for (Job job : jobs) {
-            // Calculate job duration in minutes
-            long durationMinutes = 0;
-            try {
-                String[] timeParts = job.getDuration().split(":");
-                int hours = Integer.parseInt(timeParts[0]);
-                int minutes = Integer.parseInt(timeParts[1]);
-                int seconds = Integer.parseInt(timeParts[2]);
+            // Use the public parseJobDuration method from CloudControllerDAO
+            long durationMinutes = cloudControllerDAO.parseJobDuration(job).toMinutes();
 
-                durationMinutes = hours * 60 + minutes + (seconds > 0 ? 1 : 0); // Round up seconds
-            } catch (Exception e) {
-                durationMinutes = 60; // Default to 1 hour if parsing fails
-            }
+            String status = currentStates.getOrDefault(job.getJobId(), job.getStatus());
+            String timeToCompleteStr = "-";
 
-            // Add current job duration to running total (for FIFO calculation)
-            if (!job.getStatus().equals(CloudControllerDAO.STATE_COMPLETED)) {
+            if (CloudControllerDAO.STATE_QUEUED.equals(status) || CloudControllerDAO.STATE_PROGRESS.equals(status)) {
                 runningTotalMinutes += durationMinutes;
+                long totalHours = runningTotalMinutes / 60;
+                long totalMinutesPart = runningTotalMinutes % 60;
+                 timeToCompleteStr = totalHours > 0
+                        ? String.format("%dh %dm", totalHours, totalMinutesPart)
+                        : String.format("%dm", totalMinutesPart);
+            } else if (CloudControllerDAO.STATE_COMPLETED.equals(status)) {
+                 timeToCompleteStr = "Completed";
             }
 
-            // Format the running total as hours and minutes
-            long totalHours = runningTotalMinutes / 60;
-            long totalMinutes = runningTotalMinutes % 60;
-            String timeToComplete = totalHours > 0 ?
-                    String.format("%dh %dm", totalHours, totalMinutes) :
-                    String.format("%dm", totalMinutes);
-
-            // Get completion time
             String completionTime = completionTimes.getOrDefault(job.getJobId(), "Not calculated");
 
-            // Add row to table
             scheduleTableModel.addRow(new Object[]{
                     job.getJobId(),
                     job.getJobName(),
                     job.getDuration(),
-                    job.getStatus().equals(CloudControllerDAO.STATE_COMPLETED) ? "Completed" : timeToComplete,
-                    job.getStatus(),
+                    timeToCompleteStr,
+                    status,
                     completionTime
             });
         }
@@ -285,57 +434,107 @@ public class CloudControllerDashboard extends JPanel {
 
     private void updateQueueStatus() {
         Map<String, Integer> summary = cloudControllerDAO.getJobQueueSummary();
-        queueStatusLabel.setText(String.format("Queue Status: %d Queued | %d In Progress | %d Completed",
-                summary.getOrDefault(CloudControllerDAO.STATE_QUEUED, 0),
-                summary.getOrDefault(CloudControllerDAO.STATE_PROGRESS, 0),
-                summary.getOrDefault(CloudControllerDAO.STATE_COMPLETED, 0)));
+        queueStatusLabel.setText(String.format(
+             "Queue Status: %d Pending | %d Queued | %d In Progress | %d Completed",
+            summary.getOrDefault(CloudControllerDAO.STATE_PENDING_APPROVAL, 0),
+            summary.getOrDefault(CloudControllerDAO.STATE_QUEUED, 0),
+            summary.getOrDefault(CloudControllerDAO.STATE_PROGRESS, 0),
+            summary.getOrDefault(CloudControllerDAO.STATE_COMPLETED, 0)
+        ));
     }
 
     private void loadAllocationDropdowns() {
         userDropdown.removeAllItems();
         jobDropdown.removeAllItems();
 
-        List<User> users = userDAO.getAllVehicleOwners();
+        List<User> users = userDAO.getAllUsers();
+        users.sort(Comparator.comparing(User::getFullName));
         for (User user : users) {
             userDropdown.addItem(user.getUserId() + " - " + user.getFullName());
         }
 
-        List<Job> jobs = jobDAO.getAllJobs();
+         List<Job> jobs = jobDAO.getAllJobs().stream()
+                          .filter(j -> !CloudControllerDAO.STATE_PENDING_APPROVAL.equals(j.getStatus()))
+                          .sorted(Comparator.comparing(Job::getJobId))
+                          .collect(Collectors.toList());
         for (Job job : jobs) {
             jobDropdown.addItem(job.getJobId() + " - " + job.getJobName());
         }
     }
 
-    /**
-     * Calculates completion times for all jobs using FIFO scheduling
-     */
-    private void calculateCompletionTimes() {
-        Map<String, String> completionTimes = cloudControllerDAO.calculateCompletionTimes();
-        if (completionTimes.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "No jobs found to schedule.", "Schedule", JOptionPane.INFORMATION_MESSAGE);
+    // --- Action Methods ---
+
+     private void approveSelectedRequest() {
+        int selectedRow = pendingRequestTable.getSelectedRow();
+        if (selectedRow != -1) {
+            int requestId = (int) pendingRequestTableModel.getValueAt(selectedRow, 0);
+
+            approveRequestButton.setEnabled(false);
+            rejectRequestButton.setEnabled(false);
+
+            Runnable refreshCallback = () -> {
+                 loadPendingRequestData();
+                 loadJobData();
+                 loadScheduleData();
+                 updateQueueStatus();
+                 loadAllocationDropdowns();
+                 boolean hasRequests = pendingRequestTableModel.getRowCount() > 0;
+                 approveRequestButton.setEnabled(hasRequests);
+                 rejectRequestButton.setEnabled(hasRequests);
+             };
+
+            cloudControllerDAO.approveRequest(requestId, refreshCallback);
+            // Result message is now handled via SwingUtilities.invokeLater within the DAO
         } else {
-            loadScheduleData();
-            loadJobData();
-            updateQueueStatus();
-
-            // Show the calculation results
-            String output = cloudControllerDAO.generateSchedulingOutput();
-            JTextArea textArea = new JTextArea(output);
-            textArea.setEditable(false);
-            textArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-            JScrollPane scrollPane = new JScrollPane(textArea);
-            scrollPane.setPreferredSize(new Dimension(600, 300));
-
-            JOptionPane.showMessageDialog(this,
-                    scrollPane,
-                    "Job Scheduling Results (FIFO)",
-                    JOptionPane.INFORMATION_MESSAGE);
+            JOptionPane.showMessageDialog(this, "Please select a request from the 'Pending Approvals' table first.", "Selection Required", JOptionPane.WARNING_MESSAGE);
         }
     }
 
-    /**
-     * Assigns vehicles to jobs based on availability and FIFO order
-     */
+    private void rejectSelectedRequest() {
+        int selectedRow = pendingRequestTable.getSelectedRow();
+        if (selectedRow != -1) {
+             int requestId = (int) pendingRequestTableModel.getValueAt(selectedRow, 0);
+             int confirm = JOptionPane.showConfirmDialog(this,
+                "Are you sure you want to reject Request ID " + requestId + "?\nThe submitted data will be discarded.",
+                "Confirm Rejection",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE);
+
+             if (confirm == JOptionPane.YES_OPTION) {
+                 if (cloudControllerDAO.rejectRequest(requestId)) {
+                     JOptionPane.showMessageDialog(this, "Request ID " + requestId + " rejected and removed.", "Rejection Success", JOptionPane.INFORMATION_MESSAGE);
+                     loadPendingRequestData();
+                     updateQueueStatus();
+                 } else {
+                     JOptionPane.showMessageDialog(this, "Failed to reject request ID " + requestId + ". It might have been processed already.", "Rejection Error", JOptionPane.ERROR_MESSAGE);
+                     loadPendingRequestData();
+                 }
+             }
+        } else {
+            JOptionPane.showMessageDialog(this, "Please select a request from the 'Pending Approvals' table first.", "Selection Required", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    private void calculateCompletionTimes() {
+        cloudControllerDAO.calculateCompletionTimes();
+        loadScheduleData();
+        loadJobData();
+        updateQueueStatus();
+        JOptionPane.showMessageDialog(this, "Job schedule and completion times recalculated.", "Schedule Updated", JOptionPane.INFORMATION_MESSAGE);
+
+        String output = cloudControllerDAO.generateSchedulingOutput();
+        JTextArea textArea = new JTextArea(output);
+        textArea.setEditable(false);
+        textArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        JScrollPane scrollPane = new JScrollPane(textArea);
+        scrollPane.setPreferredSize(new Dimension(650, 300));
+
+        JOptionPane.showMessageDialog(this,
+                scrollPane,
+                "Job Scheduling Results (FIFO)",
+                JOptionPane.INFORMATION_MESSAGE);
+    }
+
     private void assignVehiclesToJobs() {
         int assignmentCount = cloudControllerDAO.assignVehiclesToJobs();
         if (assignmentCount > 0) {
@@ -343,21 +542,17 @@ public class CloudControllerDashboard extends JPanel {
             loadScheduleData();
             updateQueueStatus();
             JOptionPane.showMessageDialog(this,
-                    "Assigned vehicles to " + assignmentCount + " jobs.",
-                    "Vehicle Assignment",
+                    "Assigned available vehicles to " + assignmentCount + " job(s). Statuses updated to 'In Progress'.",
+                    "Vehicle Assignment Success",
                     JOptionPane.INFORMATION_MESSAGE);
         } else {
             JOptionPane.showMessageDialog(this,
-                    "No new assignments were made. Check vehicle availability and job queue.",
-                    "Vehicle Assignment",
+                    "No new vehicle assignments made.\nCheck job queue and vehicle availability.",
+                    "Vehicle Assignment Info",
                     JOptionPane.INFORMATION_MESSAGE);
         }
     }
 
-    /**
-     * Advances the job queue by completing the current in-progress job
-     * and moving the next job to in-progress status
-     */
     private void advanceJobQueue() {
         String nextJobId = cloudControllerDAO.advanceJobQueue();
         if (nextJobId != null) {
@@ -365,114 +560,58 @@ public class CloudControllerDashboard extends JPanel {
             loadScheduleData();
             updateQueueStatus();
             JOptionPane.showMessageDialog(this,
-                    "Current job completed. Job " + nextJobId + " is now in progress.",
+                    "Job queue advanced. Job '" + nextJobId + "' is now 'In Progress'.",
                     "Queue Advanced",
                     JOptionPane.INFORMATION_MESSAGE);
         } else {
             JOptionPane.showMessageDialog(this,
-                    "No jobs to advance. The queue may be empty or all jobs may be completed.",
+                    "Could not advance job queue. Check for 'In Progress' or 'Queued' jobs.",
                     "Queue Status",
                     JOptionPane.INFORMATION_MESSAGE);
         }
     }
 
-    private void addNewJob() {
-        // Create a panel with more sophisticated layout
-        JPanel panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+    // --- Direct Add/Edit/Delete Methods ---
 
-        // Job ID field
-        JPanel jobIdPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        jobIdPanel.add(new JLabel("Job ID:"));
+     private void addNewJob() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbcDialog = new GridBagConstraints();
+        gbcDialog.insets = new Insets(5,5,5,5); gbcDialog.anchor = GridBagConstraints.WEST;
+
         JTextField jobIdField = new JTextField(15);
-        jobIdField.setHorizontalAlignment(SwingConstants.CENTER);
-        jobIdPanel.add(jobIdField);
-        panel.add(jobIdPanel);
-
-        // Job Name field
-        JPanel jobNamePanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        jobNamePanel.add(new JLabel("Job Name:"));
         JTextField jobNameField = new JTextField(15);
-        jobNameField.setHorizontalAlignment(SwingConstants.CENTER);
-        jobNamePanel.add(jobNameField);
-        panel.add(jobNamePanel);
-
-        // Job Owner field
-        JPanel jobOwnerPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        jobOwnerPanel.add(new JLabel("Job Owner ID:"));
         JTextField jobOwnerField = new JTextField(15);
-        jobOwnerField.setHorizontalAlignment(SwingConstants.CENTER);
-        jobNamePanel.add(jobOwnerField);
-        panel.add(jobOwnerPanel);
+        SpinnerNumberModel hoursModel = new SpinnerNumberModel(0, 0, 99, 1); JSpinner hoursSpinner = new JSpinner(hoursModel);
+        SpinnerNumberModel minutesModel = new SpinnerNumberModel(0, 0, 59, 1); JSpinner minutesSpinner = new JSpinner(minutesModel);
+        SpinnerNumberModel secondsModel = new SpinnerNumberModel(0, 0, 59, 1); JSpinner secondsSpinner = new JSpinner(secondsModel);
+         JTextField deadlineField = new JTextField(10); deadlineField.setText(java.time.LocalDate.now().plusDays(7).toString());
 
-        // Duration panel with spinner for hours, minutes, and seconds
-        JPanel durationPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        durationPanel.add(new JLabel("Duration:"));
+        gbcDialog.gridx=0; gbcDialog.gridy=0; panel.add(new JLabel("Job ID:"), gbcDialog); gbcDialog.gridx=1; panel.add(jobIdField, gbcDialog);
+        gbcDialog.gridx=0; gbcDialog.gridy=1; panel.add(new JLabel("Job Name:"), gbcDialog); gbcDialog.gridx=1; panel.add(jobNameField, gbcDialog);
+        gbcDialog.gridx=0; gbcDialog.gridy=2; panel.add(new JLabel("Job Owner ID:"), gbcDialog); gbcDialog.gridx=1; panel.add(jobOwnerField, gbcDialog);
+        gbcDialog.gridx=0; gbcDialog.gridy=3; panel.add(new JLabel("Duration:"), gbcDialog);
+        JPanel durationPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0));
+        durationPanel.add(hoursSpinner); durationPanel.add(new JLabel("h")); durationPanel.add(minutesSpinner); durationPanel.add(new JLabel("m")); durationPanel.add(secondsSpinner); durationPanel.add(new JLabel("s"));
+        gbcDialog.gridx=1; panel.add(durationPanel, gbcDialog);
+        gbcDialog.gridx=0; gbcDialog.gridy=4; panel.add(new JLabel("Deadline (YYYY-MM-DD):"), gbcDialog); gbcDialog.gridx=1; panel.add(deadlineField, gbcDialog);
 
-        // Hours spinner (0-23)
-        SpinnerNumberModel hoursModel = new SpinnerNumberModel(0, 0, 23, 1);
-        JSpinner hoursSpinner = new JSpinner(hoursModel);
-        JSpinner.NumberEditor hoursEditor = new JSpinner.NumberEditor(hoursSpinner, "00");
-        hoursSpinner.setEditor(hoursEditor);
-        hoursSpinner.setPreferredSize(new Dimension(60, 25));
-
-        // Minutes spinner (0-59)
-        SpinnerNumberModel minutesModel = new SpinnerNumberModel(0, 0, 59, 1);
-        JSpinner minutesSpinner = new JSpinner(minutesModel);
-        JSpinner.NumberEditor minutesEditor = new JSpinner.NumberEditor(minutesSpinner, "00");
-        minutesSpinner.setEditor(minutesEditor);
-        minutesSpinner.setPreferredSize(new Dimension(60, 25));
-
-        // Seconds spinner (0-59)
-        SpinnerNumberModel secondsModel = new SpinnerNumberModel(0, 0, 59, 1);
-        JSpinner secondsSpinner = new JSpinner(secondsModel);
-        JSpinner.NumberEditor secondsEditor = new JSpinner.NumberEditor(secondsSpinner, "00");
-        secondsSpinner.setEditor(secondsEditor);
-        secondsSpinner.setPreferredSize(new Dimension(60, 25));
-
-        durationPanel.add(hoursSpinner);
-        durationPanel.add(new JLabel("h"));
-        durationPanel.add(minutesSpinner);
-        durationPanel.add(new JLabel("m"));
-        durationPanel.add(secondsSpinner);
-        durationPanel.add(new JLabel("s"));
-        panel.add(durationPanel);
-
-        int result = JOptionPane.showConfirmDialog(this, panel, "Add New Job", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        int result = JOptionPane.showConfirmDialog(this, panel, "Add New Job (Directly)", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
         if (result == JOptionPane.OK_OPTION) {
             try {
-                String jobId = jobIdField.getText().trim();
-                String jobName = jobNameField.getText().trim();
-                int jobOwner = Integer.parseInt(jobOwnerField.getText().trim());
+                String jobId = jobIdField.getText().trim(); String jobName = jobNameField.getText().trim(); int jobOwner = Integer.parseInt(jobOwnerField.getText().trim());
+                int hours = (Integer) hoursSpinner.getValue(); int minutes = (Integer) minutesSpinner.getValue(); int seconds = (Integer) secondsSpinner.getValue();
+                String duration = String.format("%02d:%02d:%02d", hours, minutes, seconds); String deadline = deadlineField.getText().trim();
 
-                // Format the duration from spinner values
-                int hours = (Integer) hoursSpinner.getValue();
-                int minutes = (Integer) minutesSpinner.getValue();
-                int seconds = (Integer) secondsSpinner.getValue();
-                String duration = String.format("%02d:%02d:%02d", hours, minutes, seconds);
-
-                // Use current date as deadline for simplicity
-                String deadline = java.time.LocalDate.now().toString();
-
-                if (jobId != null && jobName != null) {
-                    // New jobs are automatically queued
-                    Job job = new Job(jobId, jobName, jobOwner, duration, deadline, CloudControllerDAO.STATE_QUEUED);
-                    if (jobDAO.addJob(job)) {
-                        loadJobData();
-                        loadAllocationDropdowns();
-
-                        // Recalculate the schedule
-                        cloudControllerDAO.calculateCompletionTimes();
-                        loadScheduleData();
-                        updateQueueStatus();
-                    } else {
-                        JOptionPane.showMessageDialog(this, "Failed to add job.");
-                    }
+                if (jobId.isEmpty() || jobName.isEmpty() || duration.equals("00:00:00") || !deadline.matches("\\d{4}-\\d{2}-\\d{2}")) {
+                     JOptionPane.showMessageDialog(this, "Valid Job ID, Name, Duration, and Deadline (YYYY-MM-DD) required.", "Input Error", JOptionPane.ERROR_MESSAGE); return;
                 }
-            } catch (NumberFormatException e) {
-                JOptionPane.showMessageDialog(this, "Invalid Job Owner ID. Please enter a number.", "Input Error", JOptionPane.ERROR_MESSAGE);
-            }
+                Job job = new Job(jobId, jobName, jobOwner, duration, deadline, CloudControllerDAO.STATE_QUEUED);
+                if (jobDAO.addJob(job)) {
+                    JOptionPane.showMessageDialog(this, "Job added directly (bypassing approval).", "Success", JOptionPane.INFORMATION_MESSAGE);
+                    refreshAllData();
+                } else { JOptionPane.showMessageDialog(this, "Failed to add job directly.", "Error", JOptionPane.ERROR_MESSAGE); }
+            } catch (NumberFormatException e) { JOptionPane.showMessageDialog(this, "Invalid Job Owner ID.", "Input Error", JOptionPane.ERROR_MESSAGE);
+            } catch (Exception e) { JOptionPane.showMessageDialog(this, "An error occurred: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE); }
         }
     }
 
@@ -480,124 +619,149 @@ public class CloudControllerDashboard extends JPanel {
         int selectedRow = jobTable.getSelectedRow();
         if (selectedRow != -1) {
             String jobId = (String) jobTableModel.getValueAt(selectedRow, 0);
-            String newJobName = JOptionPane.showInputDialog(this, "Enter new Job Name:", jobTableModel.getValueAt(selectedRow, 1));
+            Job jobToEdit = jobDAO.getAllJobs().stream().filter(j -> j.getJobId().equals(jobId)).findFirst().orElse(null);
+            if (jobToEdit == null) { JOptionPane.showMessageDialog(this, "Could not find job details.", "Error", JOptionPane.ERROR_MESSAGE); return; }
 
-            if (newJobName != null) {
-                // Find the job in the data
-                List<Job> jobs = jobDAO.getAllJobs();
-                for (Job job : jobs) {
-                    if (job.getJobId().equals(jobId)) {
-                        job.setJobName(newJobName);
-                        jobDAO.updateJob(job);
-                        break;
-                    }
-                }
+             JTextField nameField = new JTextField(jobToEdit.getJobName(), 20);
+             String[] statuses = {CloudControllerDAO.STATE_QUEUED, CloudControllerDAO.STATE_PROGRESS, CloudControllerDAO.STATE_COMPLETED};
+             JComboBox<String> statusCombo = new JComboBox<>(statuses);
+             statusCombo.setSelectedItem(jobToEdit.getStatus());
+             // Add other fields for editing as needed (duration, deadline etc.)
 
-                loadJobData();
-                loadScheduleData();
+             JPanel panel = new JPanel(new GridLayout(0,2,5,5));
+             panel.add(new JLabel("Job Name:")); panel.add(nameField);
+             panel.add(new JLabel("Status:")); panel.add(statusCombo);
+
+            int result = JOptionPane.showConfirmDialog(this, panel, "Edit Job " + jobId, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (result == JOptionPane.OK_OPTION) {
+                 String newName = nameField.getText().trim(); String newStatus = (String) statusCombo.getSelectedItem();
+                 if (!newName.isEmpty()) {
+                    jobToEdit.setJobName(newName); jobToEdit.setStatus(newStatus);
+                     if (jobDAO.updateJob(jobToEdit)) { JOptionPane.showMessageDialog(this, "Job updated.", "Success", JOptionPane.INFORMATION_MESSAGE); refreshAllData(); }
+                     else { JOptionPane.showMessageDialog(this, "Failed to update job.", "Error", JOptionPane.ERROR_MESSAGE); }
+                 } else { JOptionPane.showMessageDialog(this, "Job Name cannot be empty.", "Input Error", JOptionPane.ERROR_MESSAGE); }
             }
-        } else {
-            JOptionPane.showMessageDialog(this, "Please select a job to edit.");
-        }
+        } else { JOptionPane.showMessageDialog(this, "Please select a job to edit.", "Selection Required", JOptionPane.WARNING_MESSAGE); }
     }
 
     private void deleteSelectedJob() {
         int selectedRow = jobTable.getSelectedRow();
         if (selectedRow != -1) {
             String jobId = (String) jobTableModel.getValueAt(selectedRow, 0);
-            if (jobDAO.deleteJob(jobId)) {
-                loadJobData();
-                loadAllocationDropdowns();
-                loadScheduleData();
-                updateQueueStatus();
-            } else {
-                JOptionPane.showMessageDialog(this, "Failed to delete job.");
+            String status = (String) jobTableModel.getValueAt(selectedRow, 5);
+
+             if (CloudControllerDAO.STATE_PENDING_APPROVAL.equals(status)) {
+                 JOptionPane.showMessageDialog(this, "Cannot delete pending job. Reject it instead.", "Action Not Allowed", JOptionPane.WARNING_MESSAGE); return;
+             }
+            int confirm = JOptionPane.showConfirmDialog(this, "Delete Job ID '" + jobId + "'?", "Confirm Deletion", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (confirm == JOptionPane.YES_OPTION) {
+                if (jobDAO.deleteJob(jobId)) {
+                    JOptionPane.showMessageDialog(this, "Job '" + jobId + "' deleted.", "Success", JOptionPane.INFORMATION_MESSAGE);
+                    // Clean up state/schedule maps is good practice, though recalc handles it
+                     Map<String, String> states = cloudControllerDAO.loadJobStates(); states.remove(jobId); //cloudControllerDAO.saveJobStates(states);
+                     Map<String, String> schedule = cloudControllerDAO.loadSchedule(); schedule.remove(jobId); //cloudControllerDAO.saveSchedule(schedule);
+                    refreshAllData();
+                } else { JOptionPane.showMessageDialog(this, "Failed to delete job '" + jobId + "'.", "Error", JOptionPane.ERROR_MESSAGE); }
             }
-        } else {
-            JOptionPane.showMessageDialog(this, "Please select a job to delete.");
-        }
+        } else { JOptionPane.showMessageDialog(this, "Please select a job to delete.", "Selection Required", JOptionPane.WARNING_MESSAGE); }
     }
 
     private void addNewUser() {
-        String fullName = JOptionPane.showInputDialog(this, "Enter Username:");
-        String email = JOptionPane.showInputDialog(this, "Enter Email:");
-        String password = JOptionPane.showInputDialog(this, "Enter Password:");
-        if (fullName != null && email != null && password != null) {
-            User user = new User(fullName, email, "vehicle_owner,job_owner", password);
-            if (userDAO.addUser(user)) {
-                loadUserData();
-                loadAllocationDropdowns();
-            } else {
-                JOptionPane.showMessageDialog(this, "Failed to add user.");
-            }
+        JTextField nameField = new JTextField(20); JTextField emailField = new JTextField(20); JPasswordField passField = new JPasswordField(20);
+        JPanel panel = new JPanel(new GridLayout(0, 2, 5, 5));
+        panel.add(new JLabel("Full Name:")); panel.add(nameField); panel.add(new JLabel("Email:")); panel.add(emailField); panel.add(new JLabel("Password:")); panel.add(passField);
+         int result = JOptionPane.showConfirmDialog(this, panel, "Add New User", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+         if (result == JOptionPane.OK_OPTION) {
+             String fullName = nameField.getText().trim(); String email = emailField.getText().trim(); String password = new String(passField.getPassword());
+             if (fullName.isEmpty() || email.isEmpty() || password.isEmpty() || !email.contains("@")) {
+                 JOptionPane.showMessageDialog(this, "Valid Name, Email, and Password required.", "Input Error", JOptionPane.ERROR_MESSAGE); return;
+             }
+            User user = new User(fullName, email, "vehicle_owner,job_owner", password); // Default roles
+            if (userDAO.addUser(user)) { JOptionPane.showMessageDialog(this, "User added.", "Success", JOptionPane.INFORMATION_MESSAGE); loadUserData(); loadAllocationDropdowns(); }
+            else { JOptionPane.showMessageDialog(this, "Failed to add user (Email might exist).", "Error", JOptionPane.ERROR_MESSAGE); }
         }
     }
 
     private void editSelectedUser() {
         int selectedRow = userTable.getSelectedRow();
         if (selectedRow != -1) {
-            int userId = (int) userTableModel.getValueAt(selectedRow, 0);
-            User user = userDAO.getUserById(userId);
-
-            if (user != null) {
-                String newName = JOptionPane.showInputDialog(this, "Enter new Username:", user.getFullName());
-                if (newName != null) {
-                    user.setFullName(newName);
-                    if (userDAO.updateUser(user)) {
-                        loadUserData();
-                    } else {
-                        JOptionPane.showMessageDialog(this, "Failed to update user.");
-                    }
-                }
+            int userId = (int) userTableModel.getValueAt(selectedRow, 0); User userToEdit = userDAO.getUserById(userId);
+            if (userToEdit == null) { JOptionPane.showMessageDialog(this, "Could not find user details.", "Error", JOptionPane.ERROR_MESSAGE); return; }
+             JTextField nameField = new JTextField(userToEdit.getFullName(), 20); JTextField emailField = new JTextField(userToEdit.getEmail(), 20);
+             JPanel panel = new JPanel(new GridLayout(0, 2, 5, 5)); panel.add(new JLabel("Full Name:")); panel.add(nameField); panel.add(new JLabel("Email:")); panel.add(emailField);
+            int result = JOptionPane.showConfirmDialog(this, panel, "Edit User " + userId, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (result == JOptionPane.OK_OPTION) {
+                 String newName = nameField.getText().trim(); String newEmail = emailField.getText().trim();
+                 if (newName.isEmpty() || newEmail.isEmpty() || !newEmail.contains("@")) { JOptionPane.showMessageDialog(this, "Valid Name and Email required.", "Input Error", JOptionPane.ERROR_MESSAGE); return; }
+                 userToEdit.setFullName(newName); userToEdit.setEmail(newEmail);
+                if (userDAO.updateUser(userToEdit)) { JOptionPane.showMessageDialog(this, "User updated.", "Success", JOptionPane.INFORMATION_MESSAGE); loadUserData(); loadAllocationDropdowns(); }
+                else { JOptionPane.showMessageDialog(this, "Failed to update user.", "Error", JOptionPane.ERROR_MESSAGE); }
             }
-        } else {
-            JOptionPane.showMessageDialog(this, "Please select a user to edit.");
-        }
+        } else { JOptionPane.showMessageDialog(this, "Please select a user to edit.", "Selection Required", JOptionPane.WARNING_MESSAGE); }
     }
 
     private void deleteSelectedUser() {
         int selectedRow = userTable.getSelectedRow();
         if (selectedRow != -1) {
-            int userId = (int) userTableModel.getValueAt(selectedRow, 0);
-            if (userDAO.deleteUser(String.valueOf(userId))) {
-                loadUserData();
-                loadAllocationDropdowns();
-            } else {
-                JOptionPane.showMessageDialog(this, "Failed to delete user.");
+            int userId = (int) userTableModel.getValueAt(selectedRow, 0); String userName = (String) userTableModel.getValueAt(selectedRow, 1);
+             int confirm = JOptionPane.showConfirmDialog(this, "Delete user '" + userName + "' (ID: " + userId + ") and ALL associated data?", "Confirm Deletion", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (confirm == JOptionPane.YES_OPTION) {
+                 // Simple cascade delete simulation
+                 allocationDAO.getAllAllocations().stream().filter(a -> String.valueOf(userId).equals(a.getUserId())).forEach(a -> allocationDAO.deleteAllocation(a.getAllocationId()));
+                 jobDAO.getAllJobs().stream().filter(j -> j.getJobOwnerId() == userId).forEach(j -> jobDAO.deleteJob(j.getJobId()));
+                 VehicleDAO tempVehicleDAO = new VehicleDAO(); tempVehicleDAO.getVehiclesByOwner(userId).forEach(v -> tempVehicleDAO.deleteVehicle(v.getVin()));
+                if (userDAO.deleteUser(String.valueOf(userId))) { JOptionPane.showMessageDialog(this, "User '" + userName + "' deleted.", "Success", JOptionPane.INFORMATION_MESSAGE); refreshAllData(); }
+                else { JOptionPane.showMessageDialog(this, "Failed to delete user '" + userName + "'.", "Error", JOptionPane.ERROR_MESSAGE); }
             }
-        } else {
-            JOptionPane.showMessageDialog(this, "Please select a user to delete.");
-        }
+        } else { JOptionPane.showMessageDialog(this, "Please select a user to delete.", "Selection Required", JOptionPane.WARNING_MESSAGE); }
     }
 
     private void allocateUserToJob() {
-        String userSelection = (String) userDropdown.getSelectedItem();
-        String jobSelection = (String) jobDropdown.getSelectedItem();
+        String userSelection = (String) userDropdown.getSelectedItem(); String jobSelection = (String) jobDropdown.getSelectedItem();
         if (userSelection != null && jobSelection != null) {
-            String userId = userSelection.split(" - ")[0];
-            String jobId = jobSelection.split(" - ")[0];
-            Allocation allocation = new Allocation(userId, jobId);
-            if (allocationDAO.addAllocation(allocation)) {
-                loadAllocationData();
-            } else {
-                JOptionPane.showMessageDialog(this, "Failed to allocate user to job.");
-            }
-        } else {
-            JOptionPane.showMessageDialog(this, "Please select both a user and a job.");
-        }
+            try {
+                String userId = userSelection.split(" - ")[0]; String jobId = jobSelection.split(" - ")[0];
+                boolean exists = allocationDAO.getAllAllocations().stream().anyMatch(a -> a.getUserId().equals(userId) && a.getJobId().equals(jobId));
+                if (exists) { JOptionPane.showMessageDialog(this, "Allocation already exists.", "Allocation Exists", JOptionPane.INFORMATION_MESSAGE); return; }
+                Allocation allocation = new Allocation(userId, jobId);
+                if (allocationDAO.addAllocation(allocation)) { JOptionPane.showMessageDialog(this, "User allocated.", "Success", JOptionPane.INFORMATION_MESSAGE); loadAllocationData(); }
+                else { JOptionPane.showMessageDialog(this, "Failed to allocate.", "Error", JOptionPane.ERROR_MESSAGE); }
+            } catch (Exception ex) { JOptionPane.showMessageDialog(this, "Error parsing selection: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE); }
+        } else { JOptionPane.showMessageDialog(this, "Please select both user and job.", "Selection Required", JOptionPane.WARNING_MESSAGE); }
     }
 
     private void removeSelectedAllocation() {
         int selectedRow = allocationTable.getSelectedRow();
         if (selectedRow != -1) {
             int allocationId = (int) allocationTableModel.getValueAt(selectedRow, 0);
-            if (allocationDAO.deleteAllocation(allocationId)) {
-                loadAllocationData();
-            } else {
-                JOptionPane.showMessageDialog(this, "Failed to remove allocation.");
+             int confirm = JOptionPane.showConfirmDialog(this, "Remove Allocation ID " + allocationId + "?", "Confirm Removal", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (confirm == JOptionPane.YES_OPTION) {
+                if (allocationDAO.deleteAllocation(allocationId)) { JOptionPane.showMessageDialog(this, "Allocation removed.", "Success", JOptionPane.INFORMATION_MESSAGE); loadAllocationData(); }
+                else { JOptionPane.showMessageDialog(this, "Failed to remove allocation.", "Error", JOptionPane.ERROR_MESSAGE); }
             }
-        } else {
-            JOptionPane.showMessageDialog(this, "Please select an allocation to remove.");
+        } else { JOptionPane.showMessageDialog(this, "Please select an allocation to remove.", "Selection Required", JOptionPane.WARNING_MESSAGE); }
+    }
+
+    // --- Helper Methods ---
+
+    private void setupTableAppearance(JTable table) {
+        table.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+        table.setRowHeight(25);
+        table.setGridColor(Color.LIGHT_GRAY);
+        table.setShowGrid(true);
+        table.setIntercellSpacing(new Dimension(1, 1));
+        JTableHeader header = table.getTableHeader();
+        header.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        header.setBackground(new Color(210, 210, 210));
+        header.setForeground(Color.BLACK);
+        table.setSelectionBackground(new Color(184, 207, 229));
+        table.setSelectionForeground(Color.BLACK);
+
+        DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
+        centerRenderer.setHorizontalAlignment(JLabel.CENTER);
+        for (int i = 0; i < table.getColumnCount(); i++) {
+            table.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
         }
+         ((DefaultTableCellRenderer)header.getDefaultRenderer()).setHorizontalAlignment(JLabel.CENTER);
     }
 }

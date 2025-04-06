@@ -1,11 +1,9 @@
-package gui.pages.server;
+package gui.pages.server; // Assuming this is the correct package for ServerFrame's dashboards
 
 import javax.swing.*;
 import javax.swing.table.*;
 import java.awt.*;
 import java.text.SimpleDateFormat;
-import java.time.LocalTime;
-import java.time.format.DateTimeFormatter;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
@@ -22,375 +20,245 @@ public class ClientDashboard extends JPanel {
 
     private User client; // Authenticated client (job owner)
     private JobDAO jobDAO = new JobDAO();
-    private CloudControllerDAO cloudControllerDAO = new CloudControllerDAO();
+    private CloudControllerDAO cloudControllerDAO = new CloudControllerDAO(); // Needed to submit for approval
 
     private JTable jobTable;
     private DefaultTableModel tableModel;
     private JComboBox<String> statusFilter;
-    private JButton refreshButton, addJobButton, viewTimesButton;
+    private JButton refreshButton, addJobButton;
+    // Removed viewTimesButton as schedule info is now primarily on controller dashboard
 
     public ClientDashboard(User client) {
         this.client = client;
-        setLayout(new BorderLayout());
-        setBackground(new Color(43, 43, 43));
+        setLayout(new BorderLayout(10, 10));
+        setBackground(Color.WHITE); // Cleaner background
+        setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
 
         // Top panel with title
         JPanel topPanel = new JPanel(new BorderLayout());
         topPanel.setBackground(new Color(43, 43, 43));
-        JLabel titleLabel = new JLabel("Job Owner Dashboard", SwingConstants.CENTER);
+        JLabel titleLabel = new JLabel("My Jobs Dashboard", SwingConstants.CENTER);
         titleLabel.setFont(new Font("Arial", Font.BOLD, 20));
         titleLabel.setForeground(Color.WHITE);
-        titleLabel.setHorizontalAlignment(SwingConstants.CENTER);
         topPanel.add(titleLabel, BorderLayout.CENTER);
+        topPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
         add(topPanel, BorderLayout.NORTH);
 
+
         // Table setup
-        String[] columnNames = {"Job ID", "Status", "Duration", "Time to Complete", "Created At", "Estimated Completion"};
+        // Added "Est. Completion" from controller, removed "Time to Complete" (relative)
+        String[] columnNames = {"Job ID", "Status", "Duration", "Deadline", "Created At", "Est. Completion"};
         tableModel = new DefaultTableModel(columnNames, 0) {
             @Override
             public boolean isCellEditable(int row, int column) { return false; }
         };
         jobTable = new JTable(tableModel);
-        jobTable.setBackground(new Color(230, 230, 230));
-        jobTable.setForeground(Color.BLACK);
-        jobTable.setRowHeight(30);
-        jobTable.setFont(new Font("Arial", Font.PLAIN, 14));
+        setupTableAppearance(jobTable); // Use helper method for consistent look
 
-        // Center-align all columns
-        DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
-        centerRenderer.setHorizontalAlignment(JLabel.CENTER);
-        for (int i = 0; i < jobTable.getColumnCount(); i++) {
-            jobTable.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
-        }
-
-        JTableHeader header = jobTable.getTableHeader();
-        header.setBackground(new Color(200, 200, 200));
-        header.setForeground(Color.BLACK);
-        header.setFont(new Font("Arial", Font.BOLD, 15));
-
-        // Center table header text
-        ((DefaultTableCellRenderer)header.getDefaultRenderer()).setHorizontalAlignment(JLabel.CENTER);
 
         JScrollPane scrollPane = new JScrollPane(jobTable);
         add(scrollPane, BorderLayout.CENTER);
 
+
         // Filter, Refresh & Add Job Panel
         JPanel controlPanel = new JPanel();
-        controlPanel.setBackground(new Color(43, 43, 43));
-
-        // Center-align the components
+        controlPanel.setBackground(Color.WHITE);
         controlPanel.setLayout(new FlowLayout(FlowLayout.CENTER, 20, 10));
-//
-//        JLabel statusLabel = new JLabel("Status Filter:");
-//        statusLabel.setForeground(Color.WHITE);
-//        statusLabel.setHorizontalAlignment(SwingConstants.CENTER);
-//        controlPanel.add(statusLabel);
 
-        String[] statuses = {"All", "Queued", "In Progress", "Completed"};
+
+        JLabel statusLabel = new JLabel("Filter by Status:");
+        controlPanel.add(statusLabel);
+
+
+        // Include "Pending Approval" in filter options
+        String[] statuses = {"All", CloudControllerDAO.STATE_PENDING_APPROVAL, CloudControllerDAO.STATE_QUEUED, CloudControllerDAO.STATE_PROGRESS, CloudControllerDAO.STATE_COMPLETED};
         statusFilter = new JComboBox<>(statuses);
         statusFilter.setBackground(Color.WHITE);
         statusFilter.setFont(new Font("Arial", Font.PLAIN, 14));
         statusFilter.addActionListener(e -> updateTable());
         controlPanel.add(statusFilter);
 
-        refreshButton = new JButton("Refresh");
-        refreshButton.setBackground(Color.WHITE);
+
+        refreshButton = new JButton("Refresh List");
         refreshButton.setFont(new Font("Arial", Font.BOLD, 14));
         refreshButton.addActionListener(e -> updateTable());
         controlPanel.add(refreshButton);
 
-        addJobButton = new JButton("Add Job");
-        addJobButton.setBackground(Color.WHITE);
+
+        addJobButton = new JButton("Submit New Job"); // Changed text
         addJobButton.setFont(new Font("Arial", Font.BOLD, 14));
-        addJobButton.addActionListener(e -> openAddJobDialog());
+        addJobButton.addActionListener(e -> openSubmitJobDialog()); // Changed method called
         controlPanel.add(addJobButton);
 
-//        viewTimesButton = new JButton("View Completion Times");
-//        viewTimesButton.setBackground(Color.WHITE);
-//        viewTimesButton.setFont(new Font("Arial", Font.BOLD, 14));
-//        viewTimesButton.addActionListener(e -> updateTableWithCompletionTimes());
-//        controlPanel.add(viewTimesButton);
 
         add(controlPanel, BorderLayout.SOUTH);
 
-        // Auto-refresh every 10 seconds
-        new Timer(10000, e -> updateTable()).start();
+
+        // Initial data load and timer (optional, depends if real-time updates are desired)
+        // new Timer(15000, e -> updateTable()).start(); // Slightly longer interval
         updateTable();
     }
 
+
     /**
-     * Opens a dialog with input fields for adding a new job.
+     * Opens a dialog for submitting a new job for approval.
      */
-    private void openAddJobDialog() {
-        // Create a panel with more sophisticated layout
-        JPanel panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+    private void openSubmitJobDialog() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5,5,5,5);
+        gbc.anchor = GridBagConstraints.WEST;
 
-        // Job ID field
-        JPanel jobIdPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        jobIdPanel.add(new JLabel("Job ID:"));
+
         JTextField jobIdField = new JTextField(15);
-        jobIdField.setHorizontalAlignment(SwingConstants.CENTER);
-        jobIdPanel.add(jobIdField);
-        panel.add(jobIdPanel);
-
-        // Duration panel with spinner for hours, minutes, and seconds
-        JPanel durationPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        durationPanel.add(new JLabel("Duration:"));
-
-        // Hours spinner (0-23)
-        SpinnerNumberModel hoursModel = new SpinnerNumberModel(0, 0, 23, 1);
+        // Duration spinners
+        SpinnerNumberModel hoursModel = new SpinnerNumberModel(0, 0, 99, 1);
         JSpinner hoursSpinner = new JSpinner(hoursModel);
-        JSpinner.NumberEditor hoursEditor = new JSpinner.NumberEditor(hoursSpinner, "00");
-        hoursSpinner.setEditor(hoursEditor);
-        hoursSpinner.setPreferredSize(new Dimension(60, 25));
-
-        // Minutes spinner (0-59)
         SpinnerNumberModel minutesModel = new SpinnerNumberModel(0, 0, 59, 1);
         JSpinner minutesSpinner = new JSpinner(minutesModel);
-        JSpinner.NumberEditor minutesEditor = new JSpinner.NumberEditor(minutesSpinner, "00");
-        minutesSpinner.setEditor(minutesEditor);
-        minutesSpinner.setPreferredSize(new Dimension(60, 25));
-
-        // Seconds spinner (0-59)
         SpinnerNumberModel secondsModel = new SpinnerNumberModel(0, 0, 59, 1);
         JSpinner secondsSpinner = new JSpinner(secondsModel);
-        JSpinner.NumberEditor secondsEditor = new JSpinner.NumberEditor(secondsSpinner, "00");
-        secondsSpinner.setEditor(secondsEditor);
-        secondsSpinner.setPreferredSize(new Dimension(60, 25));
-
-        durationPanel.add(hoursSpinner);
-        durationPanel.add(new JLabel("h"));
-        durationPanel.add(minutesSpinner);
-        durationPanel.add(new JLabel("m"));
-        durationPanel.add(secondsSpinner);
-        durationPanel.add(new JLabel("s"));
-        panel.add(durationPanel);
-
-        // Deadline date picker
-        JPanel deadlinePanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        deadlinePanel.add(new JLabel("Deadline:"));
-
-        // Date picker using JSpinner with date editor
-        Calendar calendar = Calendar.getInstance();
-        Date initialDate = calendar.getTime();
-        calendar.add(Calendar.YEAR, 10); // Allow dates up to 10 years in the future
-        Date lastDate = calendar.getTime();
-        calendar.add(Calendar.YEAR, -20); // Allow dates up to 10 years in the past
-        Date firstDate = calendar.getTime();
-        SpinnerDateModel dateModel = new SpinnerDateModel(initialDate, firstDate, lastDate, Calendar.DAY_OF_MONTH);
-
+        // Deadline spinner
+        SpinnerDateModel dateModel = new SpinnerDateModel(new Date(), null, null, Calendar.DAY_OF_MONTH);
         JSpinner dateSpinner = new JSpinner(dateModel);
         JSpinner.DateEditor dateEditor = new JSpinner.DateEditor(dateSpinner, "yyyy-MM-dd");
         dateSpinner.setEditor(dateEditor);
-        dateSpinner.setPreferredSize(new Dimension(150, 25));
 
-        deadlinePanel.add(dateSpinner);
-        panel.add(deadlinePanel);
 
-        // Note about status
-        JPanel notePanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        JLabel noteLabel = new JLabel("Note: Job status will be automatically set based on FIFO scheduling.");
-        noteLabel.setFont(new Font("Arial", Font.ITALIC, 12));
-        notePanel.add(noteLabel);
-        panel.add(notePanel);
+        gbc.gridx=0; gbc.gridy=0; panel.add(new JLabel("Job ID:"), gbc);
+        gbc.gridx=1; gbc.gridy=0; panel.add(jobIdField, gbc);
 
-        int result = JOptionPane.showConfirmDialog(this, panel, "Add New Job", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+
+        gbc.gridx=0; gbc.gridy=1; panel.add(new JLabel("Duration:"), gbc);
+        JPanel durationPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0));
+        durationPanel.add(hoursSpinner); durationPanel.add(new JLabel("h"));
+        durationPanel.add(minutesSpinner); durationPanel.add(new JLabel("m"));
+        durationPanel.add(secondsSpinner); durationPanel.add(new JLabel("s"));
+        gbc.gridx=1; gbc.gridy=1; panel.add(durationPanel, gbc);
+
+
+        gbc.gridx=0; gbc.gridy=2; panel.add(new JLabel("Deadline:"), gbc);
+        gbc.gridx=1; gbc.gridy=2; panel.add(dateSpinner, gbc);
+
+        gbc.gridx=0; gbc.gridy=3; gbc.gridwidth=2; gbc.anchor = GridBagConstraints.CENTER;
+        panel.add(new JLabel("Job will be submitted for Controller approval.", SwingConstants.CENTER), gbc);
+
+
+        int result = JOptionPane.showConfirmDialog(this, panel, "Submit New Job for Approval", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
         if (result == JOptionPane.OK_OPTION) {
             String jobId = jobIdField.getText().trim();
-
-            // Format the duration from spinner values
             int hours = (Integer) hoursSpinner.getValue();
             int minutes = (Integer) minutesSpinner.getValue();
             int seconds = (Integer) secondsSpinner.getValue();
             String duration = String.format("%02d:%02d:%02d", hours, minutes, seconds);
-
-            // Format the deadline from date spinner
             Date selectedDate = (Date) dateSpinner.getValue();
             SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd");
             String deadline = dateFormat.format(selectedDate);
+
 
             if (jobId.isEmpty()) {
                 JOptionPane.showMessageDialog(this, "Job ID is required!", "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
-
-            if (hours == 0 && minutes == 0 && seconds == 0) {
+            if (duration.equals("00:00:00")) {
                 JOptionPane.showMessageDialog(this, "Duration must be greater than zero!", "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
 
-            // Jobs are automatically set to "Queued" status
-            Job newJob = new Job(jobId, jobId, client.getUserId(), duration, deadline, CloudControllerDAO.STATE_QUEUED);
-            boolean success = jobDAO.addJob(newJob);
-            if (success) {
-                JOptionPane.showMessageDialog(this, "Job added successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
-                updateTable();
+
+            // Create job object (status will be set to PENDING by the DAO method)
+            // Use jobId as jobName for simplicity here
+            Job newJob = new Job(jobId, jobId, client.getUserId(), duration, deadline, ""); // Initial status ignored
+
+
+            // Use CloudControllerDAO to submit for approval
+            boolean submitted = cloudControllerDAO.submitJobForApproval(newJob, client);
+
+
+            if (submitted) {
+                JOptionPane.showMessageDialog(this, "Job '" + jobId + "' submitted successfully for approval.", "Submission Success", JOptionPane.INFORMATION_MESSAGE);
+                updateTable(); // Refresh table to show the new pending job
             } else {
-                JOptionPane.showMessageDialog(this, "Failed to add job!", "Error", JOptionPane.ERROR_MESSAGE);
+                JOptionPane.showMessageDialog(this, "Failed to submit job for approval.", "Submission Error", JOptionPane.ERROR_MESSAGE);
             }
         }
     }
 
+
+    /**
+     * Updates the job table based on the selected status filter.
+     * Retrieves estimated completion times from the schedule file.
+     */
     public void updateTable() {
         try {
-            tableModel.setRowCount(0);
+            tableModel.setRowCount(0); // Clear table
             String selectedStatus = (String) statusFilter.getSelectedItem();
-            // If "All" is selected, getJobsByClient returns all jobs for the client.
-            List<Job> jobs = jobDAO.getJobsByClient(client.getUserId(), selectedStatus);
+             Map<String, String> completionTimes = cloudControllerDAO.loadSchedule(); // Load schedule once
+             Map<String, String> currentStates = cloudControllerDAO.loadJobStates(); // Load states once
 
-            // Keep track of cumulative time for FIFO
-            long cumulativeMinutes = 0;
 
-            for (Job job : jobs) {
-                // Calculate job duration in minutes
-                long durationMinutes = 0;
-                try {
-                    String[] timeParts = job.getDuration().split(":");
-                    int hours = Integer.parseInt(timeParts[0]);
-                    int minutes = Integer.parseInt(timeParts[1]);
-                    int seconds = Integer.parseInt(timeParts[2]);
+            // Get all jobs *belonging to this client*
+             // We need to handle filtering based on the *actual* status (from state file or pending)
+            List<Job> allClientJobs = jobDAO.getJobsByClient(client.getUserId(), "All"); // Get all first
 
-                    durationMinutes = hours * 60 + minutes + (seconds > 0 ? 1 : 0); // Round up seconds
-                } catch (Exception e) {
-                    durationMinutes = 60; // Default to 1 hour if parsing fails
+
+            for (Job job : allClientJobs) {
+                 // Determine the correct status to display and filter by
+                 String displayStatus = CloudControllerDAO.STATE_PENDING_APPROVAL.equals(job.getStatus())
+                                      ? CloudControllerDAO.STATE_PENDING_APPROVAL
+                                      : currentStates.getOrDefault(job.getJobId(), job.getStatus());
+
+
+                 // Apply filter
+                if ("All".equalsIgnoreCase(selectedStatus) || selectedStatus.equalsIgnoreCase(displayStatus)) {
+                    String estimatedCompletion = completionTimes.getOrDefault(job.getJobId(), "-");
+                     // Don't show completion time for pending jobs
+                     if (CloudControllerDAO.STATE_PENDING_APPROVAL.equals(displayStatus)) {
+                         estimatedCompletion = "N/A (Pending)";
+                     } else if (CloudControllerDAO.STATE_COMPLETED.equals(displayStatus) && "-".equals(estimatedCompletion)) {
+                          estimatedCompletion = "Completed"; // If state is complete but no time recorded
+                     }
+
+
+                    tableModel.addRow(new Object[]{
+                            job.getJobId(),
+                            displayStatus, // Show the accurate status
+                            job.getDuration(),
+                            job.getDeadline(),
+                            job.getCreatedTimestamp(),
+                            estimatedCompletion // Show estimated completion from schedule
+                    });
                 }
-
-                // Add to cumulative time if not completed
-                if (!job.getStatus().equals(CloudControllerDAO.STATE_COMPLETED)) {
-                    cumulativeMinutes += durationMinutes;
-                }
-
-                // Format the cumulative time as hours and minutes
-                long totalHours = cumulativeMinutes / 60;
-                long totalMinutes = cumulativeMinutes % 60;
-                String timeToComplete = totalHours > 0 ?
-                        String.format("%dh %dm", totalHours, totalMinutes) :
-                        String.format("%dm", totalMinutes);
-
-                // For completed jobs, don't show time to complete
-                if (job.getStatus().equals(CloudControllerDAO.STATE_COMPLETED)) {
-                    timeToComplete = "Completed";
-                }
-
-                tableModel.addRow(new Object[]{
-                        job.getJobId(),
-                        job.getStatus(),
-                        job.getDuration(),
-                        timeToComplete,
-                        job.getCreatedTimestamp(),
-                        "Not calculated"  // Placeholder for completion time
-                });
             }
         } catch(Exception ex) {
-            Logger.getLogger(ClientDashboard.class.getName()).log(Level.SEVERE, "Error updating job table: " + ex.getMessage(), ex);
+            logger.log(Level.SEVERE, "Error updating job table: " + ex.getMessage(), ex);
             JOptionPane.showMessageDialog(this, "Error loading job data: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
         }
     }
 
-    /**
-     * Updates the table with completion time information from the cloud controller
-     */
-    private void updateTableWithCompletionTimes() {
-        try {
-            // Update the table first
-            updateTable();
 
-            // Get completion times from cloud controller
-            Map<String, String> completionTimes = cloudControllerDAO.loadSchedule();
+     // Helper method for consistent table appearance
+    private void setupTableAppearance(JTable table) {
+        table.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+        table.setRowHeight(28);
+        table.setGridColor(Color.LIGHT_GRAY);
+         table.setShowGrid(true);
+         table.setIntercellSpacing(new Dimension(1,1));
+        table.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 14));
+        table.getTableHeader().setBackground(new Color(220, 220, 220));
+         table.setSelectionBackground(new Color(184, 207, 229));
+         table.setSelectionForeground(Color.BLACK);
 
-            // If no schedule exists, inform the user
-            if (completionTimes.isEmpty()) {
-                JOptionPane.showMessageDialog(this,
-                        "No completion times have been calculated yet. Please contact the Cloud Controller.",
-                        "Schedule Information",
-                        JOptionPane.INFORMATION_MESSAGE);
-                return;
-            }
 
-            // Update the completion time column in the table
-            for (int i = 0; i < tableModel.getRowCount(); i++) {
-                String jobId = (String) tableModel.getValueAt(i, 0);
-                String completionTime = completionTimes.get(jobId);
-                if (completionTime != null) {
-                    tableModel.setValueAt(completionTime, i, 5);
-                }
-            }
-
-            // Create a simple summary view just for this client's jobs
-            StringBuilder summary = new StringBuilder();
-            summary.append("Your Job Completion Times (FIFO Scheduling)\n");
-            summary.append("===========================================\n\n");
-
-            // Track running total for FIFO calculation
-            long runningTotalMinutes = 0;
-
-            for (int i = 0; i < tableModel.getRowCount(); i++) {
-                String jobId = (String) tableModel.getValueAt(i, 0);
-                String status = (String) tableModel.getValueAt(i, 1);
-                String duration = (String) tableModel.getValueAt(i, 2);
-                String completionTime = (String) tableModel.getValueAt(i, 5);
-
-                // Calculate job duration in minutes
-                long durationMinutes = 0;
-                try {
-                    String[] timeParts = duration.split(":");
-                    int hours = Integer.parseInt(timeParts[0]);
-                    int minutes = Integer.parseInt(timeParts[1]);
-                    int seconds = Integer.parseInt(timeParts[2]);
-
-                    durationMinutes = hours * 60 + minutes + (seconds > 0 ? 1 : 0); // Round up seconds
-                } catch (Exception e) {
-                    durationMinutes = 60; // Default to 1 hour if parsing fails
-                }
-
-                // Add to running total if not completed
-                if (!status.equals(CloudControllerDAO.STATE_COMPLETED)) {
-                    runningTotalMinutes += durationMinutes;
-                }
-
-                // Format duration
-                long durationHours = durationMinutes / 60;
-                long durationMin = durationMinutes % 60;
-                String formattedDuration = durationHours > 0 ?
-                        String.format("%dh %dm", durationHours, durationMin) :
-                        String.format("%dm", durationMin);
-
-                // Format time to complete
-                long totalHours = runningTotalMinutes / 60;
-                long totalMinutes = runningTotalMinutes % 60;
-                String timeToComplete = totalHours > 0 ?
-                        String.format("%dh %dm", totalHours, totalMinutes) :
-                        String.format("%dm", totalMinutes);
-
-                if (status.equals(CloudControllerDAO.STATE_COMPLETED)) {
-                    timeToComplete = "Completed";
-                }
-
-                summary.append(String.format("Job ID: %s\n", jobId));
-                summary.append(String.format("Status: %s\n", status));
-                summary.append(String.format("Duration: %s\n", formattedDuration));
-                summary.append(String.format("Time to Complete: %s\n", timeToComplete));
-                summary.append(String.format("Estimated Completion: %s\n", completionTime));
-                summary.append("-------------------------------------------\n");
-            }
-
-            // Display the summary
-            JTextArea textArea = new JTextArea(summary.toString());
-            textArea.setEditable(false);
-            textArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-            JScrollPane scrollPane = new JScrollPane(textArea);
-            scrollPane.setPreferredSize(new Dimension(500, 300));
-
-            JOptionPane.showMessageDialog(this,
-                    scrollPane,
-                    "Your Job Schedule",
-                    JOptionPane.INFORMATION_MESSAGE);
-
-        } catch(Exception ex) {
-            Logger.getLogger(ClientDashboard.class.getName()).log(Level.SEVERE, "Error updating completion times: " + ex.getMessage(), ex);
-            JOptionPane.showMessageDialog(this, "Error loading completion time data: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        // Center-align all columns
+        DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
+        centerRenderer.setHorizontalAlignment(JLabel.CENTER);
+        for (int i = 0; i < table.getColumnCount(); i++) {
+            table.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
         }
+         // Center header text too
+         ((DefaultTableCellRenderer)table.getTableHeader().getDefaultRenderer())
+             .setHorizontalAlignment(JLabel.CENTER);
     }
 }

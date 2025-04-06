@@ -2,16 +2,22 @@ package dao;
 
 import db.FileManager;
 import models.Job;
+import models.PendingRequest;
+import models.User;
 import models.Vehicle;
+
+import javax.swing.SwingUtilities; // Import SwingUtilities
+import javax.swing.JOptionPane;   // Import JOptionPane for showing errors from background thread
 
 import java.time.*;
 import java.time.format.*;
 import java.util.*;
 import java.util.logging.*;
+import java.util.stream.Collectors;
 
 /**
  * Data Access Object for Cloud Controller operations.
- * Implements job scheduling and completion time calculation logic.
+ * Implements job scheduling, completion time calculation, and approval workflow.
  */
 public class CloudControllerDAO {
     private static final Logger logger = Logger.getLogger(CloudControllerDAO.class.getName());
@@ -26,9 +32,13 @@ public class CloudControllerDAO {
     public static final String STATE_QUEUED = "Queued";
     public static final String STATE_PROGRESS = "In Progress";
     public static final String STATE_COMPLETED = "Completed";
+    public static final String STATE_PENDING_APPROVAL = "Pending Approval"; // New state
 
     private JobDAO jobDAO;
     private VehicleDAO vehicleDAO;
+
+    // Use a standard ArrayList, but access MUST BE synchronized
+    private static final List<PendingRequest> pendingRequests = new ArrayList<>();
 
     // HashMap to store job duration (in minutes) for each job ID
     private Map<String, Long> jobDurations = new HashMap<>();
@@ -36,140 +46,331 @@ public class CloudControllerDAO {
     public CloudControllerDAO() {
         this.jobDAO = new JobDAO();
         this.vehicleDAO = new VehicleDAO();
+        // Note: In a real server, you'd load pending requests from persistence here.
+    }
+
+    // --- Approval Workflow Methods (Modified for synchronized List) ---
+
+    /**
+     * Adds a new job request to the pending queue for approval.
+     * Does NOT save the job to jobs.txt yet.
+     * @param job The job submitted.
+     * @param submittedBy The user who submitted the job.
+     * @return true if the request was added to the queue.
+     */
+    public boolean submitJobForApproval(Job job, User submittedBy) {
+        // Set status to Pending Approval before adding to queue
+        job.setStatus(STATE_PENDING_APPROVAL);
+        PendingRequest request = new PendingRequest(PendingRequest.RequestType.JOB, job, submittedBy);
+        boolean added;
+        synchronized (pendingRequests) { // Synchronize access
+            added = pendingRequests.add(request);
+        }
+        if (added) {
+            logger.info("Job submitted for approval: " + job.getJobId() + " by " + submittedBy.getFullName());
+        } else {
+            logger.warning("Failed to add job request to pending queue: " + job.getJobId());
+        }
+        return added;
     }
 
     /**
-     * Calculates job completion times using FIFO (First In First Out) scheduling
-     * and updates job states.
+     * Adds a new vehicle registration request to the pending queue for approval.
+     * Does NOT save the vehicle to vehicles.txt yet.
+     * @param vehicle The vehicle submitted.
+     * @param submittedBy The user who submitted the vehicle.
+     * @return true if the request was added to the queue.
+     */
+    public boolean submitVehicleForApproval(Vehicle vehicle, User submittedBy) {
+        // Vehicles don't have an explicit status field like Jobs,
+        // but they are conceptually "pending approval" when in the queue.
+        PendingRequest request = new PendingRequest(PendingRequest.RequestType.VEHICLE, vehicle, submittedBy);
+        boolean added;
+        synchronized (pendingRequests) { // Synchronize access
+            added = pendingRequests.add(request);
+        }
+        if (added) {
+            logger.info("Vehicle submitted for approval: " + vehicle.getVin() + " by " + submittedBy.getFullName());
+        } else {
+            logger.warning("Failed to add vehicle request to pending queue: " + vehicle.getVin());
+        }
+        return added;
+    }
+
+    /**
+     * Retrieves all current pending requests.
+     * @return A list of PendingRequest objects (thread-safe copy).
+     */
+    public List<PendingRequest> getPendingRequests() {
+        synchronized (pendingRequests) { // Synchronize access
+            // Return a copy to prevent modification issues outside synchronization
+            return new ArrayList<>(pendingRequests);
+        }
+    }
+
+    /**
+     * Processes the approval of a pending request. Finds the request by ID,
+     * removes it from the queue, and starts a background thread to save the data.
+     * Note: This method now returns void as success/failure is handled by the background thread.
+     * @param requestId The ID of the request to approve.
+     * @param callback A Runnable to execute on the EDT after processing (e.g., refresh UI)
+     */
+    public void approveRequest(int requestId, Runnable callback) {
+        PendingRequest requestToProcess = null;
+        boolean removed = false;
+
+        // 1. Find and remove the request SYNCHRONOUSLY (and safely)
+        synchronized (pendingRequests) {
+            Iterator<PendingRequest> iterator = pendingRequests.iterator();
+            while (iterator.hasNext()) {
+                PendingRequest req = iterator.next();
+                if (req.getRequestId() == requestId) {
+                    requestToProcess = req;
+                    iterator.remove(); // Safely remove while iterating
+                    removed = true;
+                    break;
+                }
+            }
+        }
+
+        // 2. If found and removed, start a background thread to save
+        if (requestToProcess != null && removed) {
+            final PendingRequest finalRequest = requestToProcess; // Need final variable for lambda
+            logger.info("Request " + requestId + " removed from queue. Starting background save thread.");
+
+            // *** EXPLICIT THREAD CREATION ***
+            Thread saveThread = new Thread(() -> {
+                boolean saved = false;
+                String message;
+                boolean isError = false;
+
+                try {
+                    // Perform the file saving in the background thread
+                    if (finalRequest.getType() == PendingRequest.RequestType.JOB) {
+                        Job job = (Job) finalRequest.getData();
+                        job.setStatus(STATE_QUEUED); // Set status before saving
+                        saved = jobDAO.addJob(job);
+                        if (saved) {
+                            logger.info("Background thread successfully saved Job ID: " + job.getJobId());
+                            message = "Request ID " + requestId + " (Job: " + job.getJobId() + ") approved and saved.";
+                        } else {
+                            logger.severe("Background thread FAILED to save approved Job ID: " + job.getJobId());
+                            message = "Error saving approved Job ID: " + job.getJobId() + ". Please check logs.";
+                            isError = true;
+                            // Consider how to handle save failure - maybe re-add request?
+                        }
+                    } else if (finalRequest.getType() == PendingRequest.RequestType.VEHICLE) {
+                        Vehicle vehicle = (Vehicle) finalRequest.getData();
+                        saved = vehicleDAO.addVehicle(vehicle);
+                        if (saved) {
+                            logger.info("Background thread successfully saved Vehicle VIN: " + vehicle.getVin());
+                             message = "Request ID " + requestId + " (Vehicle: " + vehicle.getVin() + ") approved and saved.";
+                        } else {
+                            logger.severe("Background thread FAILED to save approved Vehicle VIN: " + vehicle.getVin());
+                             message = "Error saving approved Vehicle VIN: " + vehicle.getVin() + ". Please check logs.";
+                             isError = true;
+                            // Consider how to handle save failure
+                        }
+                    } else {
+                         message = "Unknown request type for ID " + requestId;
+                         isError = true;
+                    }
+
+                    // 3. Schedule GUI updates back on the EDT
+                    final String finalMessage = message;
+                    final boolean finalIsError = isError;
+                    final boolean finalSaved = saved; // Need final variable for lambda
+                    SwingUtilities.invokeLater(() -> {
+                        JOptionPane.showMessageDialog(null, // Use null parent for simplicity from background thread
+                                finalMessage,
+                                finalIsError ? "Approval Error" : "Approval Success",
+                                finalIsError ? JOptionPane.ERROR_MESSAGE : JOptionPane.INFORMATION_MESSAGE);
+                        if (finalSaved) {
+                             // Optionally trigger schedule recalculation only if a job was saved
+                             if (finalRequest.getType() == PendingRequest.RequestType.JOB) {
+                                 calculateCompletionTimes(); // Recalculate on EDT after save success
+                             }
+                        }
+                        if (callback != null) {
+                            callback.run(); // Run the provided callback (e.g., refresh UI) on EDT
+                        }
+                    });
+
+                } catch (Exception e) {
+                    logger.log(Level.SEVERE, "Exception in background save thread for request " + requestId, e);
+                    // Report error back to EDT
+                    SwingUtilities.invokeLater(() -> {
+                        JOptionPane.showMessageDialog(null,
+                                "An unexpected error occurred while saving request " + requestId + ":\n" + e.getMessage(),
+                                "Background Save Error", JOptionPane.ERROR_MESSAGE);
+                         if (callback != null) {
+                            callback.run(); // Still run callback to refresh UI state
+                        }
+                    });
+                }
+            });
+            saveThread.setName("SaveRequest-" + requestId);
+            saveThread.start(); // Start the background thread
+
+        } else {
+            // Request not found or couldn't be removed
+            logger.warning("Approve Request: Request ID " + requestId + " not found or couldn't be removed.");
+             // Still run callback to potentially refresh UI state
+            if (callback != null) {
+                SwingUtilities.invokeLater(callback);
+            }
+             // Optionally show a message that the request wasn't found
+             // SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(null, ...));
+        }
+    }
+
+    /**
+     * Processes the rejection of a pending request.
+     * Finds the request by ID and removes it from the queue without saving.
+     * @param requestId The ID of the request to reject.
+     * @return true if the request was found and removed, false otherwise.
+     */
+    public boolean rejectRequest(int requestId) {
+        boolean removed = false;
+        synchronized (pendingRequests) { // Synchronize access
+             Iterator<PendingRequest> iterator = pendingRequests.iterator();
+             while(iterator.hasNext()){
+                 PendingRequest req = iterator.next();
+                 if(req.getRequestId() == requestId){
+                     iterator.remove(); // Use iterator's remove method for safety
+                     removed = true;
+                     logger.info("Rejected and removed request ID: " + requestId);
+                     // Optionally log details of the rejected item
+                     if (req.getType() == PendingRequest.RequestType.JOB) {
+                         logger.info("Rejected Job details: ID=" + ((Job)req.getData()).getJobId());
+                     } else if (req.getType() == PendingRequest.RequestType.VEHICLE) {
+                          logger.info("Rejected Vehicle details: VIN=" + ((Vehicle)req.getData()).getVin());
+                     }
+                     break; // Found and removed, exit loop
+                 }
+             }
+        }
+        if (!removed) {
+            logger.warning("Reject Request: Request ID " + requestId + " not found in pending queue.");
+        }
+        return removed;
+    }
+
+    // --- Existing Scheduling Methods ---
+
+    /**
+     * Calculates job completion times using FIFO scheduling. Considers only saved jobs.
      * @return A map of job IDs to their calculated completion times.
      */
     public Map<String, String> calculateCompletionTimes() {
-        // Get all jobs and sort them by creation timestamp (FIFO)
-        List<Job> allJobs = jobDAO.getAllJobs();
-
-        // Sort by creation timestamp (FIFO)
+        List<Job> allJobs = jobDAO.getAllJobs().stream()
+                             .filter(j -> !STATE_PENDING_APPROVAL.equals(j.getStatus()))
+                             .collect(Collectors.toList());
         allJobs.sort(Comparator.comparing(Job::getCreatedTimestamp));
 
-        // Maps to store results
         Map<String, String> completionTimes = new LinkedHashMap<>();
-        Map<String, String> jobStates = new LinkedHashMap<>();
+        Map<String, String> jobStates = loadJobStates();
 
-        // Clear job durations map
         jobDurations.clear();
-
-        // Track current time for completion calculation
         LocalDateTime currentTime = LocalDateTime.now();
-
-        // Running total for completion time in minutes (for relative time calculation)
         long totalMinutes = 0;
-
-        // Determine which job is currently in progress (if any)
         Job inProgressJob = null;
+
         for (Job job : allJobs) {
-            if (STATE_PROGRESS.equals(job.getStatus())) {
+            if (STATE_PROGRESS.equals(jobStates.getOrDefault(job.getJobId(), job.getStatus()))) {
                 inProgressJob = job;
                 break;
             }
         }
 
-        // Process all jobs
         for (Job job : allJobs) {
-            // Skip already completed jobs but include them in results
-            if (STATE_COMPLETED.equals(job.getStatus())) {
-                // For completed jobs, use their existing completion time if available
-                String existingCompletionTime = getJobCompletionTime(job.getJobId());
-                if (existingCompletionTime != null) {
-                    completionTimes.put(job.getJobId(), existingCompletionTime);
-                } else {
-                    // If no completion time record exists, use a placeholder
-                    completionTimes.put(job.getJobId(), "Already completed");
-                }
-                jobStates.put(job.getJobId(), STATE_COMPLETED);
+            String currentState = jobStates.getOrDefault(job.getJobId(), job.getStatus());
+
+            if (STATE_COMPLETED.equals(currentState)) {
+                String existingCompletionTime = loadSchedule().get(job.getJobId()); // Check saved schedule
+                 completionTimes.put(job.getJobId(), existingCompletionTime != null ? existingCompletionTime : "Completed");
+                 jobStates.put(job.getJobId(), STATE_COMPLETED); // Ensure state map is consistent
                 continue;
             }
 
-            // Calculate job duration
             Duration jobDuration = parseJobDuration(job);
-
-            // Store job duration in minutes for reporting
             long durationMinutes = jobDuration.toMinutes();
             jobDurations.put(job.getJobId(), durationMinutes);
-
-            // Add this job's duration to the running total
             totalMinutes += durationMinutes;
 
-            // If no job is in progress, set the first non-completed job to "In Progress"
-            if (inProgressJob == null && !STATE_COMPLETED.equals(job.getStatus())) {
+            String newStatus = currentState; // Start with current state
+            if (inProgressJob == null) {
                 inProgressJob = job;
-
-                // Update job status to "In Progress"
-                job.setStatus(STATE_PROGRESS);
-                jobDAO.updateJob(job);
-                jobStates.put(job.getJobId(), STATE_PROGRESS);
-            }
-            // If this is not the in-progress job and not completed, set to "Queued"
-            else if (!job.equals(inProgressJob) && !STATE_COMPLETED.equals(job.getStatus())) {
-                job.setStatus(STATE_QUEUED);
-                jobDAO.updateJob(job);
-                jobStates.put(job.getJobId(), STATE_QUEUED);
+                newStatus = STATE_PROGRESS;
+            } else if (!job.equals(inProgressJob)) {
+                newStatus = STATE_QUEUED;
+            } else { // It is the inProgressJob
+                 newStatus = STATE_PROGRESS;
             }
 
-            // Calculate completion time
+             // Only update if status actually changed or needs confirmation
+             if (!newStatus.equals(currentState)) {
+                job.setStatus(newStatus);
+                jobDAO.updateJob(job); // Update file
+                jobStates.put(job.getJobId(), newStatus); // Update state map
+            }
+
             LocalDateTime completionTime = currentTime.plus(jobDuration);
             String completionTimeStr = completionTime.format(TIMESTAMP_FORMATTER);
             completionTimes.put(job.getJobId(), completionTimeStr);
-
-            // Update current time for next job
             currentTime = completionTime;
         }
 
-        // Save the schedule and job states to files
         saveSchedule(completionTimes);
         saveJobStates(jobStates);
-
         return completionTimes;
     }
 
     /**
-     * Gets job duration in a human-readable format (e.g., "2 hours 30 minutes")
-     * @param jobId The job ID
-     * @return Human-readable duration string
+     * Gets job duration in a human-readable format.
+     * @param jobId The job ID.
+     * @return Human-readable duration string.
      */
-    public String getJobDurationFormatted(String jobId) {
+     public String getJobDurationFormatted(String jobId) {
         Long minutes = jobDurations.get(jobId);
         if (minutes == null) {
-            return "Unknown";
+             List<Job> jobs = jobDAO.getAllJobs();
+             for (Job job : jobs) {
+                 if (job.getJobId().equals(jobId)) {
+                    Duration duration = parseJobDuration(job);
+                    minutes = duration.toMinutes();
+                    jobDurations.put(jobId, minutes);
+                    break;
+                 }
+             }
+             if (minutes == null) return "Unknown";
         }
 
         long hours = minutes / 60;
         long remainingMinutes = minutes % 60;
 
-        if (hours > 0) {
-            return String.format("%d hour%s %d minute%s",
-                    hours, hours != 1 ? "s" : "",
-                    remainingMinutes, remainingMinutes != 1 ? "s" : "");
+        if (hours > 0 && remainingMinutes > 0) {
+             return String.format("%d hour%s %d min%s", hours, hours != 1 ? "s" : "", remainingMinutes, remainingMinutes != 1 ? "s" : "");
+        } else if (hours > 0) {
+             return String.format("%d hour%s", hours, hours != 1 ? "s" : "");
         } else {
-            return String.format("%d minute%s", remainingMinutes, remainingMinutes != 1 ? "s" : "");
+             return String.format("%d min%s", remainingMinutes, remainingMinutes != 1 ? "s" : "");
         }
     }
 
     /**
-     * Parse job duration from string format to Duration
-     * @param job The job to parse duration from
-     * @return Duration object representing the job's processing time
+     * Parse job duration from string format to Duration. Made public previously.
+     * @param job The job to parse duration from.
+     * @return Duration object representing the job's processing time.
      */
-    private Duration parseJobDuration(Job job) {
-        // Parse job duration (assuming format: HH:mm:ss)
+    public Duration parseJobDuration(Job job) {
         LocalTime durationTime;
         try {
             durationTime = LocalTime.parse(job.getDuration(), TIME_FORMATTER);
         } catch (DateTimeParseException e) {
-            logger.log(Level.WARNING, "Invalid duration format for job " + job.getJobId() + ": " + job.getDuration());
-            // Default to 1 hour if parsing fails
+            logger.log(Level.WARNING, "Invalid duration format for job " + job.getJobId() + ": " + job.getDuration() + ". Defaulting to 1 hour.");
             durationTime = LocalTime.of(1, 0, 0);
         }
-
-        // Convert LocalTime to Duration (hours, minutes, seconds)
         return Duration.ofHours(durationTime.getHour())
                 .plusMinutes(durationTime.getMinute())
                 .plusSeconds(durationTime.getSecond());
@@ -180,73 +381,85 @@ public class CloudControllerDAO {
      * @return The ID of the newly in-progress job, or null if no jobs are available.
      */
     public String advanceJobQueue() {
-        List<Job> allJobs = jobDAO.getAllJobs();
-        allJobs.sort(Comparator.comparing(Job::getCreatedTimestamp)); // FIFO order
+         List<Job> allJobs = jobDAO.getAllJobs().stream()
+                              .filter(j -> !STATE_PENDING_APPROVAL.equals(j.getStatus()))
+                              .collect(Collectors.toList());
+        allJobs.sort(Comparator.comparing(Job::getCreatedTimestamp));
 
         Job inProgressJob = null;
         List<Job> queuedJobs = new ArrayList<>();
+        Map<String, String> currentStates = loadJobStates();
 
-        // Find the current in-progress job and all queued jobs
         for (Job job : allJobs) {
-            if (STATE_PROGRESS.equals(job.getStatus())) {
+             String status = currentStates.getOrDefault(job.getJobId(), job.getStatus());
+            if (STATE_PROGRESS.equals(status)) {
                 inProgressJob = job;
-            } else if (STATE_QUEUED.equals(job.getStatus())) {
+            } else if (STATE_QUEUED.equals(status)) {
                 queuedJobs.add(job);
             }
         }
 
-        // If there's a job in progress, mark it as completed
+        String nextJobId = null;
         if (inProgressJob != null) {
             inProgressJob.setStatus(STATE_COMPLETED);
             jobDAO.updateJob(inProgressJob);
+            currentStates.put(inProgressJob.getJobId(), STATE_COMPLETED);
+            logger.info("Advanced queue: Job " + inProgressJob.getJobId() + " marked as Completed.");
 
-            // If there are queued jobs, move the next one to in-progress
             if (!queuedJobs.isEmpty()) {
                 Job nextJob = queuedJobs.get(0);
                 nextJob.setStatus(STATE_PROGRESS);
                 jobDAO.updateJob(nextJob);
-
-                // Recalculate completion times
-                calculateCompletionTimes();
-
-                return nextJob.getJobId();
+                currentStates.put(nextJob.getJobId(), STATE_PROGRESS);
+                nextJobId = nextJob.getJobId();
+                logger.info("Advanced queue: Job " + nextJobId + " set to In Progress.");
             }
-        }
-        // If no job was in progress but there are queued jobs, move the first one to in-progress
-        else if (!queuedJobs.isEmpty()) {
+        } else if (!queuedJobs.isEmpty()) {
             Job nextJob = queuedJobs.get(0);
             nextJob.setStatus(STATE_PROGRESS);
             jobDAO.updateJob(nextJob);
-
-            // Recalculate completion times
-            calculateCompletionTimes();
-
-            return nextJob.getJobId();
+            currentStates.put(nextJob.getJobId(), STATE_PROGRESS);
+            nextJobId = nextJob.getJobId();
+            logger.info("Advanced queue: No job was In Progress. Job " + nextJobId + " set to In Progress.");
+        } else {
+            logger.info("Advanced queue: No job In Progress and no Queued jobs found.");
         }
 
-        // Recalculate completion times to ensure consistency
-        calculateCompletionTimes();
+        saveJobStates(currentStates);
+        calculateCompletionTimes(); // Recalculate schedule
 
-        return null; // No job was advanced
+        return nextJobId;
     }
 
     /**
-     * Gets a summary of the current job queue status.
+     * Gets a summary of the current job queue status (including pending).
      * @return A map with count of jobs in each state.
      */
     public Map<String, Integer> getJobQueueSummary() {
         List<Job> allJobs = jobDAO.getAllJobs();
+        Map<String, String> currentStates = loadJobStates();
         Map<String, Integer> summary = new HashMap<>();
-
+        summary.put(STATE_PENDING_APPROVAL, 0);
         summary.put(STATE_QUEUED, 0);
         summary.put(STATE_PROGRESS, 0);
         summary.put(STATE_COMPLETED, 0);
 
-        for (Job job : allJobs) {
-            String state = job.getStatus();
-            summary.put(state, summary.getOrDefault(state, 0) + 1);
-        }
+         // Count pending from the synchronized list
+         synchronized (pendingRequests) {
+             summary.put(STATE_PENDING_APPROVAL, pendingRequests.size());
+         }
 
+         // Count other states from saved jobs
+        for (Job job : allJobs) {
+             if (!STATE_PENDING_APPROVAL.equals(job.getStatus())) { // Only count non-pending from files
+                 String state = currentStates.getOrDefault(job.getJobId(), job.getStatus());
+                 if (summary.containsKey(state)) {
+                     summary.put(state, summary.get(state) + 1);
+                 } else {
+                     logger.warning("Job " + job.getJobId() + " (from file) has unknown state: " + state);
+                 }
+             }
+        }
         return summary;
     }
 
@@ -257,28 +470,20 @@ public class CloudControllerDAO {
      */
     private boolean saveSchedule(Map<String, String> completionTimes) {
         List<String> lines = new ArrayList<>();
-
-        for (Map.Entry<String, String> entry : completionTimes.entrySet()) {
-            String line = entry.getKey() + SEPARATOR + entry.getValue();
-            lines.add(line);
-        }
-
+        completionTimes.forEach((jobId, time) -> lines.add(jobId + SEPARATOR + time));
         return FileManager.writeAllLines(SCHEDULE_FILE, lines);
     }
 
     /**
-     * Saves the job states to a file.
+     * Saves the job states to a file (excluding pending).
      * @param jobStates Map of job IDs to states.
      * @return true if saved successfully, false otherwise.
      */
     private boolean saveJobStates(Map<String, String> jobStates) {
         List<String> lines = new ArrayList<>();
-
-        for (Map.Entry<String, String> entry : jobStates.entrySet()) {
-            String line = entry.getKey() + SEPARATOR + entry.getValue();
-            lines.add(line);
-        }
-
+        jobStates.entrySet().stream()
+            .filter(entry -> !STATE_PENDING_APPROVAL.equals(entry.getValue())) // Don't save pending state
+            .forEach(entry -> lines.add(entry.getKey() + SEPARATOR + entry.getValue()));
         return FileManager.writeAllLines(JOB_STATE_FILE, lines);
     }
 
@@ -289,118 +494,134 @@ public class CloudControllerDAO {
     public Map<String, String> loadSchedule() {
         Map<String, String> completionTimes = new LinkedHashMap<>();
         List<String> lines = FileManager.readAllLines(SCHEDULE_FILE);
-
         for (String line : lines) {
-            String[] parts = line.split(DELIMITER);
-            if (parts.length >= 2) {
+            String[] parts = line.split(DELIMITER, 2);
+            if (parts.length == 2) {
                 completionTimes.put(parts[0], parts[1]);
+            } else {
+                logger.warning("Skipping malformed line in schedule file: " + line);
             }
         }
-
         return completionTimes;
     }
 
     /**
-     * Gets a specific job's completion time.
+     * Loads the job states from file.
+     * @return Map of job IDs to their last known state (Queued, In Progress, Completed).
+     */
+    public Map<String, String> loadJobStates() {
+        Map<String, String> jobStates = new HashMap<>();
+        List<String> lines = FileManager.readAllLines(JOB_STATE_FILE);
+        for (String line : lines) {
+            String[] parts = line.split(DELIMITER, 2);
+            if (parts.length == 2) {
+                jobStates.put(parts[0], parts[1]);
+            } else {
+                logger.warning("Skipping malformed line in job state file: " + line);
+            }
+        }
+        return jobStates;
+    }
+
+    /**
+     * Gets a specific job's completion time from the loaded schedule.
      * @param jobId The ID of the job.
      * @return The completion time as a string, or null if not found.
      */
     public String getJobCompletionTime(String jobId) {
-        Map<String, String> schedule = loadSchedule();
-        return schedule.get(jobId);
+        return loadSchedule().get(jobId);
     }
 
     /**
-     * Generate a formatted text output showing completion time for all jobs in order.
+     * Generate a formatted text output showing completion time for all saved jobs.
      * @return Formatted output string showing job scheduling results.
      */
     public String generateSchedulingOutput() {
-        List<Job> allJobs = jobDAO.getAllJobs();
-        allJobs.sort(Comparator.comparing(Job::getCreatedTimestamp)); // FIFO order
+         List<Job> allJobs = jobDAO.getAllJobs().stream()
+                              .filter(j -> !STATE_PENDING_APPROVAL.equals(j.getStatus()))
+                              .collect(Collectors.toList());
+        allJobs.sort(Comparator.comparing(Job::getCreatedTimestamp));
 
         Map<String, String> completionTimes = loadSchedule();
+        Map<String, String> currentStates = loadJobStates();
 
         StringBuilder output = new StringBuilder();
-        output.append("Job Scheduling Results (FIFO)\n");
-        output.append("============================\n");
-        output.append("Job ID | Duration | Time to Complete | Completion Time | Status\n");
-        output.append("--------------------------------------------------------------\n");
+        output.append("Job Scheduling Results (FIFO - Excluding Pending)\n");
+        output.append("=================================================\n");
+        String headerFormat = "%-8s | %-10s | %-16s | %-19s | %s\n";
+        String rowFormat =    "%-8s | %-10s | %-16s | %-19s | %s\n";
+        output.append(String.format(headerFormat, "Job ID", "Duration", "Time Remaining", "Est. Compl. Time", "Status"));
+        output.append("----------------------------------------------------------------------\n");
 
-        // Running total of time to complete all jobs
         long runningTotalMinutes = 0;
 
         for (Job job : allJobs) {
-            // Get the job's duration in minutes
             Duration jobDuration = parseJobDuration(job);
             long durationMinutes = jobDuration.toMinutes();
+            String status = currentStates.getOrDefault(job.getJobId(), job.getStatus());
+            String completionTimeStr = completionTimes.getOrDefault(job.getJobId(), "-");
+            String timeToCompleteStr = "-";
 
-            // Add to running total (for FIFO calculation)
-            runningTotalMinutes += durationMinutes;
+             if (STATE_QUEUED.equals(status) || STATE_PROGRESS.equals(status)) {
+                 runningTotalMinutes += durationMinutes;
+                 long totalHours = runningTotalMinutes / 60;
+                 long totalMinutesPart = runningTotalMinutes % 60;
+                 timeToCompleteStr = totalHours > 0
+                        ? String.format("%dh %dm", totalHours, totalMinutesPart)
+                        : String.format("%dm", totalMinutesPart);
+             } else if (STATE_COMPLETED.equals(status)) {
+                 timeToCompleteStr = "Completed";
+             }
 
-            // Format the running total as hours and minutes
-            long totalHours = runningTotalMinutes / 60;
-            long totalMinutes = runningTotalMinutes % 60;
-            String timeToComplete = totalHours > 0 ?
-                    String.format("%dh %dm", totalHours, totalMinutes) :
-                    String.format("%dm", totalMinutes);
-
-            // Get formatted job duration (HH:MM:SS)
-            String jobDurationFormatted = job.getDuration();
-
-            // Get completion time from the schedule
-            String completionTime = completionTimes.getOrDefault(job.getJobId(), "Not calculated");
-
-            output.append(String.format("%-7s| %-9s| %-16s| %-15s| %s\n",
+            output.append(String.format(rowFormat,
                     job.getJobId(),
-                    jobDurationFormatted,
-                    timeToComplete,
-                    completionTime,
-                    job.getStatus()));
+                    job.getDuration(),
+                    timeToCompleteStr,
+                    completionTimeStr,
+                    status));
         }
-
         return output.toString();
     }
 
     /**
-     * Assigns available vehicles to jobs based on FIFO order.
+     * Assigns available vehicles to jobs based on FIFO order (only affects saved jobs).
      * @return The number of assignments made.
      */
     public int assignVehiclesToJobs() {
-        List<Job> jobs = jobDAO.getAllJobs();
+         List<Job> jobs = jobDAO.getAllJobs().stream()
+                          .filter(j -> !STATE_PENDING_APPROVAL.equals(j.getStatus()))
+                          .collect(Collectors.toList());
         List<Vehicle> vehicles = vehicleDAO.getAllVehicles();
+        Map<String, String> currentStates = loadJobStates();
 
-        // Filter for unassigned jobs and sort by creation time (FIFO)
-        List<Job> unassignedJobs = new ArrayList<>();
-        for (Job job : jobs) {
-            if (STATE_QUEUED.equalsIgnoreCase(job.getStatus())) {
-                unassignedJobs.add(job);
-            }
-        }
-        unassignedJobs.sort(Comparator.comparing(Job::getCreatedTimestamp));
+        List<Job> queuedJobs = jobs.stream()
+                .filter(job -> STATE_QUEUED.equals(currentStates.getOrDefault(job.getJobId(), job.getStatus())))
+                .sorted(Comparator.comparing(Job::getCreatedTimestamp))
+                .collect(Collectors.toList());
 
-        // Filter for available vehicles
-        List<Vehicle> availableVehicles = new ArrayList<>();
-        for (Vehicle vehicle : vehicles) {
-            // In a real system, we would check vehicle availability here
-            availableVehicles.add(vehicle);
-        }
+        List<Vehicle> availableVehicles = new ArrayList<>(vehicles);
 
-        // Assign vehicles to jobs (simple implementation)
         int assignmentCount = 0;
-        for (Job job : unassignedJobs) {
+        for (Job job : queuedJobs) {
             if (assignmentCount < availableVehicles.size()) {
-                // Update job status to "In Progress"
                 job.setStatus(STATE_PROGRESS);
                 jobDAO.updateJob(job);
+                currentStates.put(job.getJobId(), STATE_PROGRESS);
                 assignmentCount++;
+                logger.info("Assigning vehicle to Job ID: " + job.getJobId() + " (Status set to In Progress)");
             } else {
-                break; // No more available vehicles
+                logger.info("No more available vehicles to assign.");
+                break;
             }
         }
 
-        // Recalculate completion times after assignments
-        calculateCompletionTimes();
-
+        if (assignmentCount > 0) {
+             saveJobStates(currentStates);
+             calculateCompletionTimes();
+             logger.info("Assigned vehicles to " + assignmentCount + " jobs.");
+        } else {
+             logger.info("No vehicles assigned in this run.");
+        }
         return assignmentCount;
     }
 }
