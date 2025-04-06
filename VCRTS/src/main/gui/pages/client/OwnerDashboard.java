@@ -1,4 +1,4 @@
-package gui.pages.client;
+package gui.pages.server;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;
@@ -10,12 +10,15 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import dao.VehicleDAO;
 import models.Vehicle;
+import services.RequestNotificationService;
 
 public class OwnerDashboard extends JPanel {
     private static final Logger logger = Logger.getLogger(OwnerDashboard.class.getName());
 
     private int ownerId;
+    private String ownerName;
     private VehicleDAO vehicleDAO = new VehicleDAO();
+    private RequestNotificationService notificationService;
 
     private CardLayout cardLayout;
     private JPanel contentPanel;
@@ -24,10 +27,19 @@ public class OwnerDashboard extends JPanel {
     private JTable vehicleTable;
     private DefaultTableModel tableModel;
 
-    public OwnerDashboard(int ownerId) {
+    public OwnerDashboard(int ownerId, String ownerName) {
         this.ownerId = ownerId;
+        this.ownerName = ownerName;
+        this.notificationService = RequestNotificationService.getInstance();
+        
         setLayout(new BorderLayout());
         setBackground(Color.WHITE);
+
+        // Start monitoring for request updates
+        SwingUtilities.invokeLater(() -> {
+            notificationService.startMonitoring(ownerId, SwingUtilities.getWindowAncestor(this) instanceof JFrame ? 
+                (JFrame)SwingUtilities.getWindowAncestor(this) : null);
+        });
 
         // Top navigation with title
         JPanel topNav = new JPanel(new BorderLayout());
@@ -41,10 +53,8 @@ public class OwnerDashboard extends JPanel {
         // Navigation panel to switch between registration form and list view
         JPanel navPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 20, 10));
         navPanel.setBackground(new Color(43, 43, 43));
-        // JButton registerVehicleButton = new JButton("Register Vehicle");
         JButton viewVehiclesButton = new JButton("View Registered Vehicles");
-        JButton addMoreVehiclesButton = new JButton("Add More Vehicles");
-        // navPanel.add(registerVehicleButton);
+        JButton addMoreVehiclesButton = new JButton("Register New Vehicle");
         navPanel.add(addMoreVehiclesButton);
         navPanel.add(viewVehiclesButton);
         add(navPanel, BorderLayout.SOUTH);
@@ -54,16 +64,20 @@ public class OwnerDashboard extends JPanel {
         contentPanel = new JPanel(cardLayout);
 
         // Create OwnerForm to register vehicles
-        contentPanel.add(new OwnerForm(ownerId), "form");
+        contentPanel.add(new OwnerForm(ownerId, ownerName), "form");
         contentPanel.add(createVehicleListPanel(), "list");
         add(contentPanel, BorderLayout.CENTER);
 
-        // registerVehicleButton.addActionListener(e -> cardLayout.show(contentPanel, "form"));
         addMoreVehiclesButton.addActionListener(e -> cardLayout.show(contentPanel, "form"));
         viewVehiclesButton.addActionListener(e -> {
             refreshVehicleTable();
             cardLayout.show(contentPanel, "list");
         });
+    }
+    
+    // Constructor for backward compatibility
+    public OwnerDashboard(int ownerId) {
+        this(ownerId, "Unknown");
     }
 
     private JPanel createVehicleListPanel() {
@@ -110,7 +124,8 @@ public class OwnerDashboard extends JPanel {
         controlPanel.add(refreshButton);
         panel.add(controlPanel, BorderLayout.SOUTH);
 
-        new Timer(10000, e -> refreshVehicleTable()).start();
+        // Use javax.swing.Timer explicitly to avoid ambiguity
+        new javax.swing.Timer(10000, e -> refreshVehicleTable()).start();
         refreshVehicleTable();
         return panel;
     }
