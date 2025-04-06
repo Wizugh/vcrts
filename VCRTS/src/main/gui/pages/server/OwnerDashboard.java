@@ -10,6 +10,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import dao.VehicleDAO;
 import models.Vehicle;
+import services.RequestNotificationService;
 
 public class OwnerDashboard extends JPanel {
     private static final Logger logger = Logger.getLogger(OwnerDashboard.class.getName());
@@ -17,6 +18,7 @@ public class OwnerDashboard extends JPanel {
     private int ownerId;
     private String ownerName;
     private VehicleDAO vehicleDAO = new VehicleDAO();
+    private RequestNotificationService notificationService;
 
     private CardLayout cardLayout;
     private JPanel contentPanel;
@@ -28,8 +30,16 @@ public class OwnerDashboard extends JPanel {
     public OwnerDashboard(int ownerId, String ownerName) {
         this.ownerId = ownerId;
         this.ownerName = ownerName;
+        this.notificationService = RequestNotificationService.getInstance();
+        
         setLayout(new BorderLayout());
         setBackground(Color.WHITE);
+
+        // Start monitoring for request updates
+        SwingUtilities.invokeLater(() -> {
+            notificationService.startMonitoring(ownerId, SwingUtilities.getWindowAncestor(this) instanceof JFrame ? 
+                (JFrame)SwingUtilities.getWindowAncestor(this) : null);
+        });
 
         // Top navigation with title
         JPanel topNav = new JPanel(new BorderLayout());
