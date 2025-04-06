@@ -2,6 +2,8 @@ package gui.pages.server;
 
 import javax.swing.*;
 import java.awt.*;
+import java.util.ArrayList;
+import java.util.List; // Explicitly import java.util.List
 import controller.ServerController;
 import models.Request;
 import models.Vehicle;
@@ -14,6 +16,7 @@ public class OwnerForm extends JPanel {
     private JLabel statusLabel;
     
     private ServerController serverController;
+    private DefaultListModel<String> requestListModel;
 
     public OwnerForm(int ownerId, String ownerName) {
         this.ownerId = ownerId;
@@ -165,8 +168,7 @@ public class OwnerForm extends JPanel {
         JPanel requestPanel = new JPanel(new BorderLayout());
         requestPanel.setBorder(BorderFactory.createTitledBorder("Request Status"));
         
-        String[] columns = {"Request ID", "Type", "Status", "Timestamp", "Response"};
-        DefaultListModel<String> requestListModel = new DefaultListModel<>();
+        requestListModel = new DefaultListModel<>();
         JList<String> requestList = new JList<>(requestListModel);
         JScrollPane requestScroll = new JScrollPane(requestList);
         requestPanel.add(requestScroll, BorderLayout.CENTER);
@@ -240,7 +242,7 @@ public class OwnerForm extends JPanel {
                     secondsSpinner.setValue(0);
                     
                     // Refresh the request status
-                    refreshRequestStatus(((JList<String>)((JScrollPane)((JPanel)getComponent(1)).getComponent(0)).getViewport().getView()).getModel());
+                    refreshRequestStatus(requestListModel);
                 } else {
                     statusLabel.setText("Error submitting request. Please try again.");
                     statusLabel.setForeground(Color.RED);
@@ -261,7 +263,7 @@ public class OwnerForm extends JPanel {
             SwingUtilities.invokeLater(() -> {
                 model.clear();
                 
-                if (requests.isEmpty()) {
+                if (requests == null || requests.isEmpty()) {
                     model.addElement("No requests found.");
                     return;
                 }
