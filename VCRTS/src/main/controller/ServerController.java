@@ -5,13 +5,11 @@ import dao.RequestDAO;
 import dao.VehicleDAO;
 import models.Job;
 import models.Request;
-import models.User;
 import models.Vehicle;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Logger;
 
 /**
@@ -26,15 +24,24 @@ public class ServerController {
     private JobDAO jobDAO;
     private VehicleDAO vehicleDAO;
     
-    // Connected clients (userId -> User)
-    private Map<Integer, User> connectedClients;
+    // In-memory storage for pending requests
+    private CopyOnWriteArrayList<Request> pendingRequests;
+    
+    // Thread for processing requests
+    private RequestProcessorThread processorThread;
     
     // Private constructor (singleton pattern)
     private ServerController() {
         requestDAO = new RequestDAO();
         jobDAO = new JobDAO();
         vehicleDAO = new VehicleDAO();
-        connectedClients = new HashMap<>();
+        pendingRequests = new CopyOnWriteArrayList<>();
+        
+        // Start the request processor thread
+        processorThread = new RequestProcessorThread();
+        processorThread.start();
+        
+        logger.info("ServerController initialized with request processor thread");
     }
     
     /**
@@ -48,103 +55,64 @@ public class ServerController {
     }
     
     /**
-     * Connects a client to the server.
-     * 
-     * @param user The user to connect.
-     * @return true if connected successfully, false if already connected or failed.
-     */
-    public boolean connectClient(User user) {
-        if (connectedClients.containsKey(user.getUserId())) {
-            return false; // Already connected
-        }
-        
-        connectedClients.put(user.getUserId(), user);
-        logger.info("Client connected: " + user.getUserId() + " - " + user.getFullName());
-        return true;
-    }
-    
-    /**
-     * Disconnects a client from the server.
-     * 
-     * @param userId The ID of the user to disconnect.
-     * @return true if disconnected successfully, false if not connected or failed.
-     */
-    public boolean disconnectClient(int userId) {
-        if (!connectedClients.containsKey(userId)) {
-            return false; // Not connected
-        }
-        
-        User user = connectedClients.remove(userId);
-        logger.info("Client disconnected: " + userId + " - " + user.getFullName());
-        return true;
-    }
-    
-    /**
-     * Checks if a client is connected.
-     * 
-     * @param userId The ID of the user to check.
-     * @return true if connected, false otherwise.
-     */
-    public boolean isClientConnected(int userId) {
-        return connectedClients.containsKey(userId);
-    }
-    
-    /**
-     * Gets a list of connected clients.
-     * 
-     * @return A list of connected users.
-     */
-    public List<User> getConnectedClients() {
-        return new ArrayList<>(connectedClients.values());
-    }
-    
-    /**
      * Submits a request from a client to the server.
      * 
      * @param request The request to submit.
      * @return true if submitted successfully, false otherwise.
      */
     public boolean submitRequest(Request request) {
-        // Check if client is connected
-        if (!isClientConnected(request.getClientId())) {
-            return false; // Client not connected
-        }
+        // Generate a unique ID for the request
+        int requestId = pendingRequests.size() + 1;
+        request.setRequestId(requestId);
         
-        return requestDAO.addRequest(request);
+        // Add to pending requests (in memory)
+        pendingRequests.add(request);
+        logger.info("Request #" + requestId + " submitted and added to pending queue");
+        return true;
     }
     
     /**
-     * Gets all pending requests.
+     * Gets all pending requests from memory.
      * 
      * @return A list of pending requests.
      */
     public List<Request> getPendingRequests() {
-        return requestDAO.getPendingRequests();
+        return new ArrayList<>(pendingRequests);
     }
     
     /**
      * Gets all requests for a specific client.
+     * This combines in-memory pending requests with stored requests.
      * 
      * @param clientId The ID of the client.
      * @return A list of requests for the specified client.
      */
     public List<Request> getClientRequests(int clientId) {
-        return requestDAO.getRequestsByClient(clientId);
+        // Get requests from memory
+        List<Request> clientRequests = new ArrayList<>();
+        for (Request request : pendingRequests) {
+            if (request.getClientId() == clientId) {
+                clientRequests.add(request);
+            }
+        }
+        
+        // Add requests from storage
+        clientRequests.addAll(requestDAO.getRequestsByClient(clientId));
+        
+        return clientRequests;
     }
     
     /**
-     * Approves a request.
+     * Approves a request and processes it.
      * 
      * @param requestId The ID of the request to approve.
      * @param responseMessage The response message.
      * @return true if approved successfully, false otherwise.
      */
     public boolean approveRequest(int requestId, String responseMessage) {
-        // Get the request first
-        List<Request> allRequests = requestDAO.getAllRequests();
+        // Find the request in the pending list
         Request targetRequest = null;
-        
-        for (Request request : allRequests) {
+        for (Request request : pendingRequests) {
             if (request.getRequestId() == requestId) {
                 targetRequest = request;
                 break;
@@ -168,7 +136,17 @@ public class ServerController {
         
         if (success) {
             // Update request status
-            return requestDAO.updateRequestStatus(requestId, Request.STATUS_APPROVED, responseMessage);
+            targetRequest.setStatus(Request.STATUS_APPROVED);
+            targetRequest.setResponseMessage(responseMessage);
+            
+            // Save the approved request to database
+            requestDAO.addRequest(targetRequest);
+            
+            // Remove from pending requests
+            pendingRequests.remove(targetRequest);
+            
+            logger.info("Request #" + requestId + " approved and processed");
+            return true;
         }
         
         return false;
@@ -182,7 +160,31 @@ public class ServerController {
      * @return true if rejected successfully, false otherwise.
      */
     public boolean rejectRequest(int requestId, String responseMessage) {
-        return requestDAO.updateRequestStatus(requestId, Request.STATUS_REJECTED, responseMessage);
+        // Find the request in the pending list
+        Request targetRequest = null;
+        for (Request request : pendingRequests) {
+            if (request.getRequestId() == requestId) {
+                targetRequest = request;
+                break;
+            }
+        }
+        
+        if (targetRequest == null) {
+            return false; // Request not found
+        }
+        
+        // Update request status
+        targetRequest.setStatus(Request.STATUS_REJECTED);
+        targetRequest.setResponseMessage(responseMessage);
+        
+        // Save the rejected request to database
+        requestDAO.addRequest(targetRequest);
+        
+        // Remove from pending requests
+        pendingRequests.remove(targetRequest);
+        
+        logger.info("Request #" + requestId + " rejected");
+        return true;
     }
     
     /**
@@ -246,6 +248,42 @@ public class ServerController {
         } catch (Exception e) {
             logger.warning("Error processing job addition: " + e.getMessage());
             return false;
+        }
+    }
+    
+    /**
+     * Thread class for processing requests in background
+     */
+    private class RequestProcessorThread extends Thread {
+        private boolean running = true;
+        
+        public RequestProcessorThread() {
+            setDaemon(true); // Set as daemon thread so it doesn't prevent JVM from exiting
+        }
+        
+        @Override
+        public void run() {
+            logger.info("Request processor thread started");
+            
+            while (running) {
+                try {
+                    // This thread could be used for automatic processing of requests
+                    // or for other background tasks related to the server
+                    
+                    // Sleep to avoid excessive CPU usage
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    logger.warning("Request processor thread interrupted: " + e.getMessage());
+                    running = false;
+                }
+            }
+            
+            logger.info("Request processor thread stopped");
+        }
+        
+        public void stopProcessing() {
+            running = false;
+            interrupt();
         }
     }
 }
