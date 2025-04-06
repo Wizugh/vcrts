@@ -4,7 +4,6 @@ import javax.swing.*;
 import java.awt.*;
 import controller.ServerController;
 import models.Request;
-import models.User;
 import models.Vehicle;
 
 public class OwnerForm extends JPanel {
@@ -214,25 +213,6 @@ public class OwnerForm extends JPanel {
             return;
         }
 
-        // Check if client is connected to server
-        if (!serverController.isClientConnected(ownerId)) {
-            int choice = JOptionPane.showConfirmDialog(this,
-                "You are not connected to the server. Connect now?",
-                "Connection Required",
-                JOptionPane.YES_NO_OPTION);
-                
-            if (choice == JOptionPane.YES_OPTION) {
-                // Create a user object to connect
-                User user = new User(ownerName, "", "vehicle_owner", "");
-                user.setUserId(ownerId);
-                serverController.connectClient(user);
-            } else {
-                statusLabel.setText("Request not submitted. Connection required.");
-                statusLabel.setForeground(Color.RED);
-                return;
-            }
-        }
-
         // Prepare the request data
         // Format: ownerId|model|make|year|vin|residencyTime
         String requestData = ownerId + "|" + model + "|" + make + "|" + year + "|" + vin + "|" + residencyTime;
@@ -240,60 +220,70 @@ public class OwnerForm extends JPanel {
         // Create and submit the request
         Request request = new Request(ownerId, ownerName, Request.TYPE_REGISTER_VEHICLE, requestData);
         
-        boolean success = serverController.submitRequest(request);
-        
-        if (success) {
-            statusLabel.setText("Request submitted successfully! Awaiting approval.");
-            statusLabel.setForeground(new Color(0, 128, 0)); // Dark green
+        // Submit the request in a separate thread
+        new Thread(() -> {
+            boolean success = serverController.submitRequest(request);
             
-            // Clear fields after successful submission
-            modelField.setText("");
-            makeField.setText("");
-            yearField.setText("");
-            vinField.setText("");
-            hoursSpinner.setValue(1);
-            minutesSpinner.setValue(0);
-            secondsSpinner.setValue(0);
-        } else {
-            statusLabel.setText("Error submitting request. Please try again.");
-            statusLabel.setForeground(Color.RED);
-        }
+            // Update UI on the event dispatch thread
+            SwingUtilities.invokeLater(() -> {
+                if (success) {
+                    statusLabel.setText("Request submitted successfully! Awaiting approval.");
+                    statusLabel.setForeground(new Color(0, 128, 0)); // Dark green
+                    
+                    // Clear fields after successful submission
+                    modelField.setText("");
+                    makeField.setText("");
+                    yearField.setText("");
+                    vinField.setText("");
+                    hoursSpinner.setValue(1);
+                    minutesSpinner.setValue(0);
+                    secondsSpinner.setValue(0);
+                    
+                    // Refresh the request status
+                    refreshRequestStatus(((JList<String>)((JScrollPane)((JPanel)getComponent(1)).getComponent(0)).getViewport().getView()).getModel());
+                } else {
+                    statusLabel.setText("Error submitting request. Please try again.");
+                    statusLabel.setForeground(Color.RED);
+                }
+            });
+        }).start();
     }
     
     /**
      * Refreshes the request status list.
      */
     private void refreshRequestStatus(DefaultListModel<String> model) {
-        model.clear();
-        
-        if (!serverController.isClientConnected(ownerId)) {
-            model.addElement("Not connected to server. Connect to view requests.");
-            return;
-        }
-        
-        java.util.List<Request> requests = serverController.getClientRequests(ownerId);
-        
-        if (requests.isEmpty()) {
-            model.addElement("No requests found.");
-            return;
-        }
-        
-        for (Request request : requests) {
-            String status = request.getStatus();
-            String statusText = "";
+        // Use a separate thread for fetching request data
+        new Thread(() -> {
+            List<Request> requests = serverController.getClientRequests(ownerId);
             
-            if (Request.STATUS_PENDING.equals(status)) {
-                statusText = "PENDING - Awaiting approval";
-            } else if (Request.STATUS_APPROVED.equals(status)) {
-                statusText = "APPROVED - " + request.getResponseMessage();
-            } else if (Request.STATUS_REJECTED.equals(status)) {
-                statusText = "REJECTED - " + request.getResponseMessage();
-            }
-            
-            String requestType = request.getRequestType().equals(Request.TYPE_REGISTER_VEHICLE) ?
-                "Vehicle Registration" : "Other Request";
+            // Update UI on the event dispatch thread
+            SwingUtilities.invokeLater(() -> {
+                model.clear();
                 
-            model.addElement("#" + request.getRequestId() + " - " + requestType + " - " + statusText);
-        }
+                if (requests.isEmpty()) {
+                    model.addElement("No requests found.");
+                    return;
+                }
+                
+                for (Request request : requests) {
+                    String status = request.getStatus();
+                    String statusText = "";
+                    
+                    if (Request.STATUS_PENDING.equals(status)) {
+                        statusText = "PENDING - Awaiting approval";
+                    } else if (Request.STATUS_APPROVED.equals(status)) {
+                        statusText = "APPROVED - " + request.getResponseMessage();
+                    } else if (Request.STATUS_REJECTED.equals(status)) {
+                        statusText = "REJECTED - " + request.getResponseMessage();
+                    }
+                    
+                    String requestType = request.getRequestType().equals(Request.TYPE_REGISTER_VEHICLE) ?
+                        "Vehicle Registration" : "Other Request";
+                        
+                    model.addElement("#" + request.getRequestId() + " - " + requestType + " - " + statusText);
+                }
+            });
+        }).start();
     }
 }
