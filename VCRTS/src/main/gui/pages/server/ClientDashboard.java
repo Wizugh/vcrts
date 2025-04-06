@@ -6,7 +6,8 @@ import java.awt.*;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
-import java.util.List;
+import java.util.List; // Explicitly import java.util.List
+import java.util.ArrayList;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import controller.ServerController;
@@ -394,7 +395,7 @@ public class ClientDashboard extends JPanel {
             SwingUtilities.invokeLater(() -> {
                 requestListModel.clear();
                 
-                if (requests.isEmpty()) {
+                if (requests == null || requests.isEmpty()) {
                     requestListModel.addElement("No requests found.");
                     return;
                 }
