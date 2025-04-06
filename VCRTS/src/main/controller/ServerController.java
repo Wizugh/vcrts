@@ -8,7 +8,7 @@ import models.Request;
 import models.Vehicle;
 
 import java.util.ArrayList;
-import java.util.List;
+import java.util.List; // Explicitly import java.util.List
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Logger;
 
@@ -97,7 +97,10 @@ public class ServerController {
         }
         
         // Add requests from storage
-        clientRequests.addAll(requestDAO.getRequestsByClient(clientId));
+        List<Request> storedRequests = requestDAO.getRequestsByClient(clientId);
+        if (storedRequests != null && !storedRequests.isEmpty()) {
+            clientRequests.addAll(storedRequests);
+        }
         
         return clientRequests;
     }
