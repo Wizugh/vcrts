@@ -1,27 +1,24 @@
 package db;
-import java.util.; 
+
+import java.util.*; 
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.io.;
+import java.io.*;
 import java.nio.file.*;
-//This class provides methods to read from and write to text files 
+
 public class FileManager {
     private static final Logger logger = Logger.getLogger(FileManager.class.getName());
     private static final String data_dir = "data";
+    
     static {
         try {
-            // Create data directory if it doesn't exist 
             Files.createDirectories(Paths.get(data_dir));
         }
         catch (IOException e){
             logger.log(Level.SEVERE, "Failed to create data directory", e);
         }
     }
-    /
-     * Reads all lines from a file.
-     * @param fileName The name of the file.
-     * @return A list of strings, where each string is a line in the file.
-     */
+    
     public static List<String> readAllLines(String fileName){
         Path filePath = Paths.get(data_dir, fileName);
         try {
@@ -35,12 +32,7 @@ public class FileManager {
             return new ArrayList<>();
         }
     }
-    /
-     * Writes all lines to a file.
-     * @param fileName The name of the file.
-     * @param lines The lines to write.
-     * @return true if the operation was successful, false otherwise.
-     */
+    
     public static boolean writeAllLines(String fileName, List<String> lines){
         Path filePath = Paths.get(data_dir, fileName);
         try {
@@ -51,12 +43,7 @@ public class FileManager {
             return false;
         }
     }
-        /
-     * Appends a single line to a file.
-     * @param fileName The name of the file.
-     * @param line The line to append.
-     * @return true if the operation was successful, false otherwise.
-     */
+    
     public static boolean appendLine(String fileName, String line) {
         Path filePath = Paths.get(data_dir, fileName);
         try {
@@ -71,20 +58,11 @@ public class FileManager {
             return false;
         }
     }
-    /
-     * Generates a unique ID.
-     * @param fileName The file to check for existing IDs.
-     * @param idPrefix A prefix for the ID (optional).
-     * @return A unique ID string.
-     */
+    
     public static String generateUniqueId(String fileName, String idPrefix) {
         return idPrefix + System.currentTimeMillis();
     }
-      /**
-     * Generates a unique numeric ID.
-     * @param fileName The file to check for existing IDs.
-     * @return A unique numeric ID.
-     */
+    
     public static int generateUniqueNumericId(String fileName) {
         List<String> lines = readAllLines(fileName);
         int maxId = 0;
@@ -98,7 +76,6 @@ public class FileManager {
                     }
                 }
             } catch (NumberFormatException e) {
-                // Skip lines that don't start with a number
             }
         }
         return maxId + 1;
