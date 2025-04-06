@@ -4,6 +4,7 @@ import javax.swing.*;
 import java.awt.*;
 import java.util.logging.Logger;
 
+import controller.ServerController;
 import models.User;
 
 public class UniversalDashboard extends JPanel {
@@ -14,15 +15,20 @@ public class UniversalDashboard extends JPanel {
     private CardLayout contentLayout;
     private JPanel contentPanel;
     private JToggleButton vehicleOwnerButton, jobOwnerButton;
+    private JLabel connectionStatusLabel;
 
     // Component panels for different roles
     private ClientDashboard clientDashboard;
     private OwnerDashboard ownerDashboard;
     private CloudControllerDashboard cloudDashboard;
 
+    // Server controller
+    private ServerController serverController;
+
     public UniversalDashboard(ServerFrame server, User user) {
         this.server = server;
         this.user = user;
+        this.serverController = ServerController.getInstance();
 
         setLayout(new BorderLayout());
 
@@ -37,6 +43,9 @@ public class UniversalDashboard extends JPanel {
 
         // Initialize dashboard for the user's current role
         initializeRoleDashboards();
+
+        // Connect the user to the server
+        connectToServer();
 
         // Show the appropriate dashboard
         if (user.hasRole("cloud_controller")) {
@@ -93,10 +102,38 @@ public class UniversalDashboard extends JPanel {
 
         panel.add(centerPanel, BorderLayout.CENTER);
 
+        // Right panel for connection and logout
+        JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        rightPanel.setBackground(new Color(43, 43, 43));
+        
+        // Connection status label
+        connectionStatusLabel = new JLabel("Not Connected", SwingConstants.CENTER);
+        connectionStatusLabel.setFont(new Font("Arial", Font.PLAIN, 12));
+        connectionStatusLabel.setForeground(Color.RED);
+        rightPanel.add(connectionStatusLabel);
+        
+        // Connect/Disconnect button
+        JButton connectButton = new JButton("Connect");
+        connectButton.addActionListener(e -> {
+            if (serverController.isClientConnected(user.getUserId())) {
+                disconnectFromServer();
+                connectButton.setText("Connect");
+            } else {
+                connectToServer();
+                connectButton.setText("Disconnect");
+            }
+        });
+        rightPanel.add(connectButton);
+        
         // Logout button
         JButton logoutButton = new JButton("Logout");
-        logoutButton.addActionListener(e -> server.logout());
-        panel.add(logoutButton, BorderLayout.EAST);
+        logoutButton.addActionListener(e -> {
+            disconnectFromServer();
+            server.logout();
+        });
+        rightPanel.add(logoutButton);
+        
+        panel.add(rightPanel, BorderLayout.EAST);
 
         return panel;
     }
@@ -114,9 +151,38 @@ public class UniversalDashboard extends JPanel {
             }
 
             if (user.hasRole("vehicle_owner")) {
-                ownerDashboard = new OwnerDashboard(user.getUserId());
+                ownerDashboard = new OwnerDashboard(user.getUserId(), user.getFullName());
                 contentPanel.add(ownerDashboard, "vehicle_owner");
             }
+        }
+    }
+    
+    /**
+     * Connects the user to the server
+     */
+    private void connectToServer() {
+        boolean connected = serverController.connectClient(user);
+        updateConnectionStatus(connected);
+    }
+    
+    /**
+     * Disconnects the user from the server
+     */
+    private void disconnectFromServer() {
+        boolean disconnected = serverController.disconnectClient(user.getUserId());
+        updateConnectionStatus(!disconnected);
+    }
+    
+    /**
+     * Updates the connection status display
+     */
+    private void updateConnectionStatus(boolean connected) {
+        if (connected) {
+            connectionStatusLabel.setText("Connected");
+            connectionStatusLabel.setForeground(new Color(0, 128, 0)); // Dark green
+        } else {
+            connectionStatusLabel.setText("Not Connected");
+            connectionStatusLabel.setForeground(Color.RED);
         }
     }
 
