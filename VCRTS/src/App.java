@@ -70,7 +70,7 @@ public class VCRTSApp {
             "6. In the Job Owner client, add a job (this sends a request to the server)\n" +
             "7. In the Cloud Controller, go to the Client Requests tab to approve or reject the requests\n" +
             "8. Check the status of the requests in the respective clients\n\n" +
-            "Note: Only one user can be connected to the server at a time. Use the Connect/Disconnect buttons to manage connections.";
+            "Note: All clients can interact with the server simultaneously. The system automatically manages connections and uses threads to handle concurrent operations.";
         
         JOptionPane.showMessageDialog(null, instructions, "VCRTS Instructions", JOptionPane.INFORMATION_MESSAGE);
     }
