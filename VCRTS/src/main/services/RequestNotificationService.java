@@ -16,7 +16,7 @@ public class RequestNotificationService {
     private Map<Integer, String> lastKnownStatus;
     private JFrame parentFrame;
     private int userId;
-    private Timer refreshTimer;
+    private javax.swing.Timer refreshTimer;
     private static final int REFRESH_INTERVAL = 2000; // 2 seconds
 
     private RequestNotificationService() {
@@ -44,7 +44,7 @@ public class RequestNotificationService {
         
         // Start the refresh timer if not already running
         if (refreshTimer == null || !refreshTimer.isRunning()) {
-            refreshTimer = new Timer(REFRESH_INTERVAL, e -> checkForStatusChanges());
+            refreshTimer = new javax.swing.Timer(REFRESH_INTERVAL, e -> checkForStatusChanges());
             refreshTimer.start();
         }
     }
@@ -138,7 +138,7 @@ public class RequestNotificationService {
             }
             
             // Start a timer to make the title blink
-            Timer blinkTimer = new Timer(500, e -> {
+            javax.swing.Timer blinkTimer = new javax.swing.Timer(500, e -> {
                 if (titleLabel.getForeground().equals(Color.WHITE)) {
                     if (Request.STATUS_APPROVED.equals(request.getStatus())) {
                         titleLabel.setForeground(new Color(0, 150, 0));
