@@ -79,24 +79,17 @@ public class CloudControllerRequestPanel extends JPanel {
         
         // Connect clients panel for viewing connected clients
         JPanel clientsPanel = new JPanel(new BorderLayout());
-        clientsPanel.setBorder(BorderFactory.createTitledBorder("Connected Clients"));
+        clientsPanel.setBorder(BorderFactory.createTitledBorder("Pending Requests Summary"));
         
-        DefaultTableModel clientsModel = new DefaultTableModel(
-            new String[]{"Client ID", "Name", "Role"}, 0);
-        JTable clientsTable = new JTable(clientsModel);
-        JScrollPane clientsScroll = new JScrollPane(clientsTable);
-        clientsPanel.add(clientsScroll, BorderLayout.CENTER);
-        
-        JButton refreshClientsButton = new JButton("Refresh Clients");
-        refreshClientsButton.addActionListener(e -> {
-            updateConnectedClients(clientsModel);
-        });
-        clientsPanel.add(refreshClientsButton, BorderLayout.SOUTH);
+        // Summary label
+        JLabel summaryLabel = new JLabel("Pending requests: 0", SwingConstants.CENTER);
+        summaryLabel.setFont(new Font("Arial", Font.BOLD, 14));
+        clientsPanel.add(summaryLabel, BorderLayout.CENTER);
         
         // Create a split pane with clients panel on top
         JSplitPane splitPane = new JSplitPane(
             JSplitPane.VERTICAL_SPLIT, clientsPanel, scrollPane);
-        splitPane.setDividerLocation(150);
+        splitPane.setDividerLocation(50);
         add(splitPane, BorderLayout.CENTER);
         
         // Add action listeners
@@ -104,50 +97,78 @@ public class CloudControllerRequestPanel extends JPanel {
         rejectButton.addActionListener(e -> rejectSelectedRequest());
         refreshButton.addActionListener(e -> refreshRequests());
         
+        // Add selection listener to enable/disable buttons
+        requestTable.getSelectionModel().addListSelectionListener(e -> {
+            boolean hasSelection = requestTable.getSelectedRow() != -1;
+            approveButton.setEnabled(hasSelection);
+            rejectButton.setEnabled(hasSelection);
+        });
+        
         // Initial data load
         refreshRequests();
-        updateConnectedClients(clientsModel);
+        
+        // Start auto-refresh thread
+        new Thread(() -> {
+            try {
+                while (true) {
+                    // Refresh every 5 seconds
+                    Thread.sleep(5000);
+                    
+                    // Update UI on event dispatch thread
+                    SwingUtilities.invokeLater(() -> {
+                        refreshRequests();
+                        updateSummaryLabel(summaryLabel);
+                    });
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }).start();
+    }
+    
+    /**
+     * Updates the pending requests summary label
+     */
+    private void updateSummaryLabel(JLabel label) {
+        int pendingCount = 0;
+        for (int i = 0; i < tableModel.getRowCount(); i++) {
+            if (Request.STATUS_PENDING.equals(tableModel.getValueAt(i, 5))) {
+                pendingCount++;
+            }
+        }
+        
+        label.setText("Pending requests: " + pendingCount);
     }
     
     /**
      * Refreshes the requests table with the latest data.
      */
     public void refreshRequests() {
-        tableModel.setRowCount(0);
-        List<Request> requests = serverController.getPendingRequests();
-        
-        for (Request request : requests) {
-            tableModel.addRow(new Object[] {
-                request.getRequestId(),
-                request.getClientId(),
-                request.getClientName(),
-                request.getRequestType(),
-                request.getRequestData(),
-                request.getStatus(),
-                request.getTimestamp()
+        new Thread(() -> {
+            final List<Request> requests = serverController.getPendingRequests();
+            
+            // Update UI on EDT
+            SwingUtilities.invokeLater(() -> {
+                tableModel.setRowCount(0);
+                
+                for (Request request : requests) {
+                    tableModel.addRow(new Object[] {
+                        request.getRequestId(),
+                        request.getClientId(),
+                        request.getClientName(),
+                        request.getRequestType(),
+                        request.getRequestData(),
+                        request.getStatus(),
+                        request.getTimestamp()
+                    });
+                }
+                
+                // Enable/disable buttons based on selection
+                boolean hasSelection = requestTable.getSelectedRow() != -1;
+                approveButton.setEnabled(hasSelection);
+                rejectButton.setEnabled(hasSelection);
             });
-        }
-        
-        // Enable/disable buttons based on selection
-        boolean hasSelection = requestTable.getSelectedRow() != -1;
-        approveButton.setEnabled(hasSelection);
-        rejectButton.setEnabled(hasSelection);
-    }
-    
-    /**
-     * Updates the connected clients table.
-     */
-    private void updateConnectedClients(DefaultTableModel model) {
-        model.setRowCount(0);
-        List<User> clients = serverController.getConnectedClients();
-        
-        for (User client : clients) {
-            model.addRow(new Object[] {
-                client.getUserId(),
-                client.getFullName(),
-                client.getRole()
-            });
-        }
+        }).start();
     }
     
     /**
@@ -170,21 +191,30 @@ public class CloudControllerRequestPanel extends JPanel {
             responseMessage = "Request approved by Cloud Controller.";
         }
         
-        boolean success = serverController.approveRequest(requestId, responseMessage);
+        // Process approval in a separate thread
+        final String finalResponseMessage = responseMessage;
+        final int finalRequestId = requestId;
         
-        if (success) {
-            JOptionPane.showMessageDialog(this, 
-                "Request approved successfully.", 
-                "Success", 
-                JOptionPane.INFORMATION_MESSAGE);
-            refreshRequests();
-            responseArea.setText("");
-        } else {
-            JOptionPane.showMessageDialog(this, 
-                "Failed to approve request. Please try again.", 
-                "Error", 
-                JOptionPane.ERROR_MESSAGE);
-        }
+        new Thread(() -> {
+            boolean success = serverController.approveRequest(finalRequestId, finalResponseMessage);
+            
+            // Update UI on EDT
+            SwingUtilities.invokeLater(() -> {
+                if (success) {
+                    JOptionPane.showMessageDialog(CloudControllerRequestPanel.this, 
+                        "Request approved successfully.", 
+                        "Success", 
+                        JOptionPane.INFORMATION_MESSAGE);
+                    refreshRequests();
+                    responseArea.setText("");
+                } else {
+                    JOptionPane.showMessageDialog(CloudControllerRequestPanel.this, 
+                        "Failed to approve request. Please try again.", 
+                        "Error", 
+                        JOptionPane.ERROR_MESSAGE);
+                }
+            });
+        }).start();
     }
     
     /**
@@ -211,20 +241,29 @@ public class CloudControllerRequestPanel extends JPanel {
             return;
         }
         
-        boolean success = serverController.rejectRequest(requestId, responseMessage);
+        // Process rejection in a separate thread
+        final String finalResponseMessage = responseMessage;
+        final int finalRequestId = requestId;
         
-        if (success) {
-            JOptionPane.showMessageDialog(this, 
-                "Request rejected successfully.", 
-                "Success", 
-                JOptionPane.INFORMATION_MESSAGE);
-            refreshRequests();
-            responseArea.setText("");
-        } else {
-            JOptionPane.showMessageDialog(this, 
-                "Failed to reject request. Please try again.", 
-                "Error", 
-                JOptionPane.ERROR_MESSAGE);
-        }
+        new Thread(() -> {
+            boolean success = serverController.rejectRequest(finalRequestId, finalResponseMessage);
+            
+            // Update UI on EDT
+            SwingUtilities.invokeLater(() -> {
+                if (success) {
+                    JOptionPane.showMessageDialog(CloudControllerRequestPanel.this, 
+                        "Request rejected successfully.", 
+                        "Success", 
+                        JOptionPane.INFORMATION_MESSAGE);
+                    refreshRequests();
+                    responseArea.setText("");
+                } else {
+                    JOptionPane.showMessageDialog(CloudControllerRequestPanel.this, 
+                        "Failed to reject request. Please try again.", 
+                        "Error", 
+                        JOptionPane.ERROR_MESSAGE);
+                }
+            });
+        }).start();
     }
 }
