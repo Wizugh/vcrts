@@ -52,7 +52,7 @@ public class CloudControllerDashboard extends JPanel {
         topPanel.add(menuBar, BorderLayout.SOUTH);
         add(topPanel, BorderLayout.NORTH);
 
-        // Tabbed pane for Jobs, Users, Allocations, and Schedule
+        // Tabbed pane for Jobs, Users, Allocations, Schedule, and Requests
         JTabbedPane tabbedPane = new JTabbedPane();
 
         // Jobs Tab
@@ -130,7 +130,7 @@ public class CloudControllerDashboard extends JPanel {
         allocationPanel.add(allocationControls, BorderLayout.SOUTH);
         tabbedPane.addTab("Allocations", allocationPanel);
 
-        // Schedule Tab (New)
+        // Schedule Tab
         JPanel schedulePanel = new JPanel(new BorderLayout());
 
         // Add a status panel at the top of the schedule tab
@@ -160,6 +160,9 @@ public class CloudControllerDashboard extends JPanel {
         scheduleControlPanel.add(advanceQueueButton);
         schedulePanel.add(scheduleControlPanel, BorderLayout.SOUTH);
         tabbedPane.addTab("Schedule", schedulePanel);
+        
+        // NEW: Client Requests Tab (for approving/rejecting client requests)
+        tabbedPane.addTab("Client Requests", new CloudControllerRequestPanel());
 
         add(tabbedPane, BorderLayout.CENTER);
 
@@ -193,9 +196,13 @@ public class CloudControllerDashboard extends JPanel {
 
         // Add tab change listener to refresh data when switching to schedule tab
         tabbedPane.addChangeListener(e -> {
-            if (tabbedPane.getSelectedIndex() == 3) { // Schedule tab
+            int selectedIndex = tabbedPane.getSelectedIndex();
+            if (selectedIndex == 3) { // Schedule tab
                 loadScheduleData();
                 updateQueueStatus();
+            } else if (selectedIndex == 4) { // Client Requests tab
+                // Refresh the requests panel
+                ((CloudControllerRequestPanel) tabbedPane.getComponentAt(4)).refreshRequests();
             }
         });
     }
@@ -403,7 +410,7 @@ public class CloudControllerDashboard extends JPanel {
         jobOwnerPanel.add(new JLabel("Job Owner ID:"));
         JTextField jobOwnerField = new JTextField(15);
         jobOwnerField.setHorizontalAlignment(SwingConstants.CENTER);
-        jobNamePanel.add(jobOwnerField);
+        jobOwnerPanel.add(jobOwnerField);
         panel.add(jobOwnerPanel);
 
         // Duration panel with spinner for hours, minutes, and seconds
