@@ -6,7 +6,7 @@ import java.awt.*;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
-import java.util.List; // Explicitly import java.util.List
+import java.util.List;
 import java.util.ArrayList;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -16,6 +16,7 @@ import dao.JobDAO;
 import models.Job;
 import models.Request;
 import models.User;
+import services.RequestNotificationService;
 
 public class ClientDashboard extends JPanel {
     private static final Logger logger = Logger.getLogger(ClientDashboard.class.getName());
@@ -24,6 +25,7 @@ public class ClientDashboard extends JPanel {
     private JobDAO jobDAO = new JobDAO();
     private CloudControllerDAO cloudControllerDAO = new CloudControllerDAO();
     private ServerController serverController;
+    private RequestNotificationService notificationService;
 
     private JTable jobTable;
     private DefaultTableModel tableModel;
@@ -35,8 +37,16 @@ public class ClientDashboard extends JPanel {
     public ClientDashboard(User client) {
         this.client = client;
         serverController = ServerController.getInstance();
+        notificationService = RequestNotificationService.getInstance();
+        
         setLayout(new BorderLayout());
         setBackground(new Color(43, 43, 43));
+
+        // Start monitoring for request updates
+        SwingUtilities.invokeLater(() -> {
+            notificationService.startMonitoring(client.getUserId(), SwingUtilities.getWindowAncestor(this) instanceof JFrame ? 
+                (JFrame)SwingUtilities.getWindowAncestor(this) : null);
+        });
 
         // Top panel with title
         JPanel topPanel = new JPanel(new BorderLayout());
