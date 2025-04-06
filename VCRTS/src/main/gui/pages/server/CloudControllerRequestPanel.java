@@ -8,7 +8,8 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
-import java.util.List;
+import java.util.List; // Explicitly import java.util.List
+import java.util.ArrayList;
 
 /**
  * Panel for viewing and approving/rejecting client requests in the Cloud Controller.
@@ -150,6 +151,12 @@ public class CloudControllerRequestPanel extends JPanel {
             // Update UI on EDT
             SwingUtilities.invokeLater(() -> {
                 tableModel.setRowCount(0);
+                
+                if (requests == null || requests.isEmpty()) {
+                    // No requests found
+                    updateSummaryLabel(new JLabel("Pending requests: 0"));
+                    return;
+                }
                 
                 for (Request request : requests) {
                     tableModel.addRow(new Object[] {
