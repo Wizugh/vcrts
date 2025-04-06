@@ -4,17 +4,17 @@ import javax.swing.*;
 import javax.swing.table.*;
 import java.awt.*;
 import java.text.SimpleDateFormat;
-import java.time.LocalTime;
-import java.time.format.DateTimeFormatter;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import controller.ServerController;
 import dao.CloudControllerDAO;
 import dao.JobDAO;
 import models.Job;
+import models.Request;
 import models.User;
 
 public class ClientDashboard extends JPanel {
@@ -23,14 +23,18 @@ public class ClientDashboard extends JPanel {
     private User client; // Authenticated client (job owner)
     private JobDAO jobDAO = new JobDAO();
     private CloudControllerDAO cloudControllerDAO = new CloudControllerDAO();
+    private ServerController serverController;
 
     private JTable jobTable;
     private DefaultTableModel tableModel;
     private JComboBox<String> statusFilter;
-    private JButton refreshButton, addJobButton, viewTimesButton;
+    private JButton refreshButton, addJobButton, viewTimesButton, refreshRequestsButton;
+    private DefaultListModel<String> requestListModel;
+    private JList<String> requestList;
 
     public ClientDashboard(User client) {
         this.client = client;
+        serverController = ServerController.getInstance();
         setLayout(new BorderLayout());
         setBackground(new Color(43, 43, 43));
 
@@ -44,6 +48,68 @@ public class ClientDashboard extends JPanel {
         topPanel.add(titleLabel, BorderLayout.CENTER);
         add(topPanel, BorderLayout.NORTH);
 
+        // Create a tabbed pane
+        JTabbedPane tabbedPane = new JTabbedPane();
+        
+        // Jobs tab
+        JPanel jobsPanel = createJobsPanel();
+        tabbedPane.addTab("My Jobs", jobsPanel);
+        
+        // Requests tab
+        JPanel requestsPanel = createRequestsPanel();
+        tabbedPane.addTab("My Requests", requestsPanel);
+        
+        add(tabbedPane, BorderLayout.CENTER);
+
+        // Filter, Refresh & Add Job Panel
+        JPanel controlPanel = new JPanel();
+        controlPanel.setBackground(new Color(43, 43, 43));
+
+        // Center-align the components
+        controlPanel.setLayout(new FlowLayout(FlowLayout.CENTER, 20, 10));
+
+        String[] statuses = {"All", "Queued", "In Progress", "Completed"};
+        statusFilter = new JComboBox<>(statuses);
+        statusFilter.setBackground(Color.WHITE);
+        statusFilter.setFont(new Font("Arial", Font.PLAIN, 14));
+        statusFilter.addActionListener(e -> updateTable());
+        controlPanel.add(statusFilter);
+
+        refreshButton = new JButton("Refresh Jobs");
+        refreshButton.setBackground(Color.WHITE);
+        refreshButton.setFont(new Font("Arial", Font.BOLD, 14));
+        refreshButton.addActionListener(e -> updateTable());
+        controlPanel.add(refreshButton);
+
+        addJobButton = new JButton("Add Job");
+        addJobButton.setBackground(Color.WHITE);
+        addJobButton.setFont(new Font("Arial", Font.BOLD, 14));
+        addJobButton.addActionListener(e -> openAddJobDialog());
+        controlPanel.add(addJobButton);
+
+        add(controlPanel, BorderLayout.SOUTH);
+
+        // Auto-refresh every 10 seconds
+        new Timer(10000, e -> {
+            updateTable();
+            refreshRequestStatus();
+        }).start();
+        
+        // Connect client to server if not already connected
+        if (!serverController.isClientConnected(client.getUserId())) {
+            serverController.connectClient(client);
+        }
+        
+        updateTable();
+        refreshRequestStatus();
+    }
+    
+    /**
+     * Creates the Jobs panel
+     */
+    private JPanel createJobsPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        
         // Table setup
         String[] columnNames = {"Job ID", "Status", "Duration", "Time to Complete", "Created At", "Estimated Completion"};
         tableModel = new DefaultTableModel(columnNames, 0) {
@@ -72,56 +138,65 @@ public class ClientDashboard extends JPanel {
         ((DefaultTableCellRenderer)header.getDefaultRenderer()).setHorizontalAlignment(JLabel.CENTER);
 
         JScrollPane scrollPane = new JScrollPane(jobTable);
-        add(scrollPane, BorderLayout.CENTER);
-
-        // Filter, Refresh & Add Job Panel
-        JPanel controlPanel = new JPanel();
-        controlPanel.setBackground(new Color(43, 43, 43));
-
-        // Center-align the components
-        controlPanel.setLayout(new FlowLayout(FlowLayout.CENTER, 20, 10));
-//
-//        JLabel statusLabel = new JLabel("Status Filter:");
-//        statusLabel.setForeground(Color.WHITE);
-//        statusLabel.setHorizontalAlignment(SwingConstants.CENTER);
-//        controlPanel.add(statusLabel);
-
-        String[] statuses = {"All", "Queued", "In Progress", "Completed"};
-        statusFilter = new JComboBox<>(statuses);
-        statusFilter.setBackground(Color.WHITE);
-        statusFilter.setFont(new Font("Arial", Font.PLAIN, 14));
-        statusFilter.addActionListener(e -> updateTable());
-        controlPanel.add(statusFilter);
-
-        refreshButton = new JButton("Refresh");
-        refreshButton.setBackground(Color.WHITE);
-        refreshButton.setFont(new Font("Arial", Font.BOLD, 14));
-        refreshButton.addActionListener(e -> updateTable());
-        controlPanel.add(refreshButton);
-
-        addJobButton = new JButton("Add Job");
-        addJobButton.setBackground(Color.WHITE);
-        addJobButton.setFont(new Font("Arial", Font.BOLD, 14));
-        addJobButton.addActionListener(e -> openAddJobDialog());
-        controlPanel.add(addJobButton);
-
-//        viewTimesButton = new JButton("View Completion Times");
-//        viewTimesButton.setBackground(Color.WHITE);
-//        viewTimesButton.setFont(new Font("Arial", Font.BOLD, 14));
-//        viewTimesButton.addActionListener(e -> updateTableWithCompletionTimes());
-//        controlPanel.add(viewTimesButton);
-
-        add(controlPanel, BorderLayout.SOUTH);
-
-        // Auto-refresh every 10 seconds
-        new Timer(10000, e -> updateTable()).start();
-        updateTable();
+        panel.add(scrollPane, BorderLayout.CENTER);
+        
+        return panel;
+    }
+    
+    /**
+     * Creates the Requests panel
+     */
+    private JPanel createRequestsPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        
+        // Add title
+        JLabel titleLabel = new JLabel("Job Requests Status", SwingConstants.CENTER);
+        titleLabel.setFont(new Font("Arial", Font.BOLD, 16));
+        panel.add(titleLabel, BorderLayout.NORTH);
+        
+        // Create list for requests
+        requestListModel = new DefaultListModel<>();
+        requestList = new JList<>(requestListModel);
+        requestList.setFont(new Font("Arial", Font.PLAIN, 14));
+        requestList.setCellRenderer(new RequestListCellRenderer());
+        
+        JScrollPane scrollPane = new JScrollPane(requestList);
+        panel.add(scrollPane, BorderLayout.CENTER);
+        
+        // Add refresh button
+        refreshRequestsButton = new JButton("Refresh Requests");
+        refreshRequestsButton.addActionListener(e -> refreshRequestStatus());
+        
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        buttonPanel.add(refreshRequestsButton);
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+        
+        return panel;
     }
 
     /**
      * Opens a dialog with input fields for adding a new job.
      */
     private void openAddJobDialog() {
+        // Check if client is connected to server
+        if (!serverController.isClientConnected(client.getUserId())) {
+            int choice = JOptionPane.showConfirmDialog(this,
+                "You are not connected to the server. Connect now?",
+                "Connection Required",
+                JOptionPane.YES_NO_OPTION);
+                
+            if (choice == JOptionPane.YES_OPTION) {
+                serverController.connectClient(client);
+            } else {
+                JOptionPane.showMessageDialog(this, 
+                    "Request not submitted. Connection required.", 
+                    "Connection Error", 
+                    JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+        }
+    
         // Create a panel with more sophisticated layout
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
@@ -134,6 +209,14 @@ public class ClientDashboard extends JPanel {
         jobIdField.setHorizontalAlignment(SwingConstants.CENTER);
         jobIdPanel.add(jobIdField);
         panel.add(jobIdPanel);
+        
+        // Job Name field
+        JPanel jobNamePanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        jobNamePanel.add(new JLabel("Job Name:"));
+        JTextField jobNameField = new JTextField(15);
+        jobNameField.setHorizontalAlignment(SwingConstants.CENTER);
+        jobNamePanel.add(jobNameField);
+        panel.add(jobNamePanel);
 
         // Duration panel with spinner for hours, minutes, and seconds
         JPanel durationPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
@@ -191,7 +274,7 @@ public class ClientDashboard extends JPanel {
 
         // Note about status
         JPanel notePanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        JLabel noteLabel = new JLabel("Note: Job status will be automatically set based on FIFO scheduling.");
+        JLabel noteLabel = new JLabel("Note: Job request will be sent to the Cloud Controller for approval.");
         noteLabel.setFont(new Font("Arial", Font.ITALIC, 12));
         notePanel.add(noteLabel);
         panel.add(notePanel);
@@ -199,6 +282,7 @@ public class ClientDashboard extends JPanel {
         int result = JOptionPane.showConfirmDialog(this, panel, "Add New Job", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
         if (result == JOptionPane.OK_OPTION) {
             String jobId = jobIdField.getText().trim();
+            String jobName = jobNameField.getText().trim();
 
             // Format the duration from spinner values
             int hours = (Integer) hoursSpinner.getValue();
@@ -211,8 +295,8 @@ public class ClientDashboard extends JPanel {
             SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd");
             String deadline = dateFormat.format(selectedDate);
 
-            if (jobId.isEmpty()) {
-                JOptionPane.showMessageDialog(this, "Job ID is required!", "Error", JOptionPane.ERROR_MESSAGE);
+            if (jobId.isEmpty() || jobName.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Job ID and Job Name are required!", "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
 
@@ -221,14 +305,28 @@ public class ClientDashboard extends JPanel {
                 return;
             }
 
-            // Jobs are automatically set to "Queued" status
-            Job newJob = new Job(jobId, jobId, client.getUserId(), duration, deadline, CloudControllerDAO.STATE_QUEUED);
-            boolean success = jobDAO.addJob(newJob);
+            // Prepare the request data
+            // Format: jobId|jobName|jobOwnerId|duration|deadline|status
+            String requestData = jobId + "|" + jobName + "|" + client.getUserId() + "|" + 
+                                 duration + "|" + deadline + "|" + CloudControllerDAO.STATE_QUEUED;
+            
+            // Create and submit the request
+            Request request = new Request(client.getUserId(), client.getFullName(), 
+                                         Request.TYPE_ADD_JOB, requestData);
+            
+            boolean success = serverController.submitRequest(request);
+            
             if (success) {
-                JOptionPane.showMessageDialog(this, "Job added successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
-                updateTable();
+                JOptionPane.showMessageDialog(this, 
+                    "Job request submitted successfully! Awaiting approval.", 
+                    "Success", 
+                    JOptionPane.INFORMATION_MESSAGE);
+                refreshRequestStatus();
             } else {
-                JOptionPane.showMessageDialog(this, "Failed to add job!", "Error", JOptionPane.ERROR_MESSAGE);
+                JOptionPane.showMessageDialog(this, 
+                    "Failed to submit job request!", 
+                    "Error", 
+                    JOptionPane.ERROR_MESSAGE);
             }
         }
     }
@@ -288,109 +386,69 @@ public class ClientDashboard extends JPanel {
             JOptionPane.showMessageDialog(this, "Error loading job data: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
         }
     }
-
+    
     /**
-     * Updates the table with completion time information from the cloud controller
+     * Refreshes the request status list.
      */
-    private void updateTableWithCompletionTimes() {
-        try {
-            // Update the table first
-            updateTable();
-
-            // Get completion times from cloud controller
-            Map<String, String> completionTimes = cloudControllerDAO.loadSchedule();
-
-            // If no schedule exists, inform the user
-            if (completionTimes.isEmpty()) {
-                JOptionPane.showMessageDialog(this,
-                        "No completion times have been calculated yet. Please contact the Cloud Controller.",
-                        "Schedule Information",
-                        JOptionPane.INFORMATION_MESSAGE);
-                return;
+    private void refreshRequestStatus() {
+        requestListModel.clear();
+        
+        if (!serverController.isClientConnected(client.getUserId())) {
+            requestListModel.addElement("Not connected to server. Connect to view requests.");
+            return;
+        }
+        
+        List<Request> requests = serverController.getClientRequests(client.getUserId());
+        
+        if (requests.isEmpty()) {
+            requestListModel.addElement("No requests found.");
+            return;
+        }
+        
+        for (Request request : requests) {
+            String status = request.getStatus();
+            String statusText = "";
+            
+            if (Request.STATUS_PENDING.equals(status)) {
+                statusText = "PENDING - Awaiting approval";
+            } else if (Request.STATUS_APPROVED.equals(status)) {
+                statusText = "APPROVED - " + request.getResponseMessage();
+            } else if (Request.STATUS_REJECTED.equals(status)) {
+                statusText = "REJECTED - " + request.getResponseMessage();
             }
-
-            // Update the completion time column in the table
-            for (int i = 0; i < tableModel.getRowCount(); i++) {
-                String jobId = (String) tableModel.getValueAt(i, 0);
-                String completionTime = completionTimes.get(jobId);
-                if (completionTime != null) {
-                    tableModel.setValueAt(completionTime, i, 5);
+            
+            String requestType = request.getRequestType().equals(Request.TYPE_ADD_JOB) ?
+                "Add Job" : "Other Request";
+                
+            requestListModel.addElement("#" + request.getRequestId() + " - " + requestType + " - " + statusText);
+        }
+    }
+    
+    /**
+     * Custom cell renderer for request list items
+     */
+    private class RequestListCellRenderer extends DefaultListCellRenderer {
+        @Override
+        public Component getListCellRendererComponent(JList<?> list, Object value, 
+                int index, boolean isSelected, boolean cellHasFocus) {
+            
+            Component c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+            
+            if (value != null) {
+                String text = value.toString();
+                
+                if (text.contains("PENDING")) {
+                    setForeground(Color.BLUE);
+                } else if (text.contains("APPROVED")) {
+                    setForeground(new Color(0, 128, 0)); // Dark green
+                } else if (text.contains("REJECTED")) {
+                    setForeground(Color.RED);
+                } else {
+                    setForeground(Color.BLACK);
                 }
             }
-
-            // Create a simple summary view just for this client's jobs
-            StringBuilder summary = new StringBuilder();
-            summary.append("Your Job Completion Times (FIFO Scheduling)\n");
-            summary.append("===========================================\n\n");
-
-            // Track running total for FIFO calculation
-            long runningTotalMinutes = 0;
-
-            for (int i = 0; i < tableModel.getRowCount(); i++) {
-                String jobId = (String) tableModel.getValueAt(i, 0);
-                String status = (String) tableModel.getValueAt(i, 1);
-                String duration = (String) tableModel.getValueAt(i, 2);
-                String completionTime = (String) tableModel.getValueAt(i, 5);
-
-                // Calculate job duration in minutes
-                long durationMinutes = 0;
-                try {
-                    String[] timeParts = duration.split(":");
-                    int hours = Integer.parseInt(timeParts[0]);
-                    int minutes = Integer.parseInt(timeParts[1]);
-                    int seconds = Integer.parseInt(timeParts[2]);
-
-                    durationMinutes = hours * 60 + minutes + (seconds > 0 ? 1 : 0); // Round up seconds
-                } catch (Exception e) {
-                    durationMinutes = 60; // Default to 1 hour if parsing fails
-                }
-
-                // Add to running total if not completed
-                if (!status.equals(CloudControllerDAO.STATE_COMPLETED)) {
-                    runningTotalMinutes += durationMinutes;
-                }
-
-                // Format duration
-                long durationHours = durationMinutes / 60;
-                long durationMin = durationMinutes % 60;
-                String formattedDuration = durationHours > 0 ?
-                        String.format("%dh %dm", durationHours, durationMin) :
-                        String.format("%dm", durationMin);
-
-                // Format time to complete
-                long totalHours = runningTotalMinutes / 60;
-                long totalMinutes = runningTotalMinutes % 60;
-                String timeToComplete = totalHours > 0 ?
-                        String.format("%dh %dm", totalHours, totalMinutes) :
-                        String.format("%dm", totalMinutes);
-
-                if (status.equals(CloudControllerDAO.STATE_COMPLETED)) {
-                    timeToComplete = "Completed";
-                }
-
-                summary.append(String.format("Job ID: %s\n", jobId));
-                summary.append(String.format("Status: %s\n", status));
-                summary.append(String.format("Duration: %s\n", formattedDuration));
-                summary.append(String.format("Time to Complete: %s\n", timeToComplete));
-                summary.append(String.format("Estimated Completion: %s\n", completionTime));
-                summary.append("-------------------------------------------\n");
-            }
-
-            // Display the summary
-            JTextArea textArea = new JTextArea(summary.toString());
-            textArea.setEditable(false);
-            textArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-            JScrollPane scrollPane = new JScrollPane(textArea);
-            scrollPane.setPreferredSize(new Dimension(500, 300));
-
-            JOptionPane.showMessageDialog(this,
-                    scrollPane,
-                    "Your Job Schedule",
-                    JOptionPane.INFORMATION_MESSAGE);
-
-        } catch(Exception ex) {
-            Logger.getLogger(ClientDashboard.class.getName()).log(Level.SEVERE, "Error updating completion times: " + ex.getMessage(), ex);
-            JOptionPane.showMessageDialog(this, "Error loading completion time data: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            
+            return c;
         }
     }
 }
